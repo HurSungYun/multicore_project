@@ -2,9 +2,12 @@
 
 #include "util.h"
 
+#include <pthread.h>
 #include <string>
 #include <map>
 #include <cmath>
+
+#define NUM_THREAD 16
 
 class Tensor {
 public:
@@ -49,7 +52,17 @@ void pix2pix_init() {
    */
 }
 
-void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t num_image) {
+static uint8_t *input_buf;
+static float *weight_buf;
+static uint8_t *output_buf;
+size_t num_image;
+
+std::map<std::string, Tensor> weights;
+Tensor input;
+
+static void* pix2pix_thread(void *data);
+
+void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size_t _num_image) {
   /*
    * !!!!!!!! Caution !!!!!!!!
    * In MPI program, all buffers and num_image are only given to rank 0 process.
@@ -58,9 +71,28 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
    *   2. send inputs from rank 0 to others
    *   3. gather outputs from others to rank 0
    */
+  input_buf = _input_buf;
+  weight_buf = _weight_buf;
+  output_buf = _output_buf;
+  num_image = _num_image;
 
-  auto weights = register_weights(weight_buf); // Memory allocated for weights
-  auto input = preprocess(input_buf, num_image); // Memory allocated for input
+  weights = register_weights(weight_buf); // Memory allocated for weights
+  input = preprocess(input_buf, num_image); // Memory allocated for input
+
+  pthread_t thread[48];
+  int params[48];
+
+  for (int i = 0; i < NUM_THREAD; i++) {
+    params[i] = i;
+    pthread_create(&thread[i], NULL, pix2pix_thread, &params[i]);
+  }
+
+  for (int i = 0; i < NUM_THREAD; i++) {
+    pthread_join(thread[i], NULL);
+  }
+}
+
+static void* pix2pix_thread(void *data) {
 
   // Declare feature maps
   // Memory for feature maps are allocated when they are written first time using Tensor::alloc_once(...)
@@ -73,8 +105,13 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
   Tensor decoder_layer_rectified[9];
   Tensor decoder_layer_convolved[9];
   Tensor decoder_layer[9];
+  
+  size_t f = *((int *)data);
+  size_t quota = (num_image + NUM_THREAD - 1) / NUM_THREAD;
+  size_t start = f * quota;
+  size_t end = (f + 1) * quota > num_image ? num_image : (f + 1) * quota;
 
-  for (size_t img_idx = 0; img_idx < num_image; ++img_idx) {
+  for (size_t img_idx = start; img_idx < end; ++img_idx) {
     // Pick 1 image out of num_image
     get_one_image(input, one_image, img_idx);
 
@@ -94,7 +131,7 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
       auto bias = weights[scope + "/conv2d/bias"];
       auto scale = weights[scope + "/batch_normalization/gamma"];
       auto offset = weights[scope + "/batch_normalization/beta"];
-      encoder_layer_input[i] = encoder_layer[i - 1];
+      encoder_layer_input[i] = encoder_layer[i - 1]; // <- dependence
       leaky_relu(encoder_layer_input[i], encoder_layer_rectified[i], 0.2);
       conv2d(encoder_layer_rectified[i], filter, bias, encoder_layer_convolved[i]);
       batchnorm(encoder_layer_convolved[i], scale, offset, encoder_layer[i]);
@@ -132,6 +169,7 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
     // Put a image into output buffer
     postprocess_one_image(decoder_layer[1], output_buf, img_idx);
   }
+  return NULL;
 }
 
 Tensor::Tensor() : buf(NULL) {}
