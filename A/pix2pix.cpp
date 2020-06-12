@@ -8,6 +8,9 @@
 #include <cmath>
 
 #define NUM_THREAD 16
+#define BLOCK_SIZE 128
+
+#define LEAKY_RELU_ALPHA 0.2
 
 class Tensor {
 public:
@@ -111,13 +114,21 @@ static void* pix2pix_thread(void *data) {
   size_t start = f * quota;
   size_t end = (f + 1) * quota > num_image ? num_image : (f + 1) * quota;
 
+  double tz, ta, tb, tc, td, te;
+  double t1, t2, t3, t4, t5;
+
   for (size_t img_idx = start; img_idx < end; ++img_idx) {
     // Pick 1 image out of num_image
+
+    tz = get_time();
+
     get_one_image(input, one_image, img_idx);
 
     /*
      * Encoding phase
      */
+
+    ta = get_time();
 
     // Encoder 1 : conv
     auto filter = weights["generator/encoder_1/conv2d/kernel"];
@@ -137,6 +148,7 @@ static void* pix2pix_thread(void *data) {
       batchnorm(encoder_layer_convolved[i], scale, offset, encoder_layer[i]);
     }
 
+    tb = get_time();
     /*
      * Decoding phase
      */
@@ -148,6 +160,7 @@ static void* pix2pix_thread(void *data) {
       auto bias = weights[scope + "/conv2d_transpose/bias"];
       auto scale = weights[scope + "/batch_normalization/gamma"];
       auto offset = weights[scope + "/batch_normalization/beta"];
+      t1 = get_time();
       if (i == 8) {
         // For decoder 8, input is last layer of encoder
         decoder_layer_input[i] = encoder_layer[8];
@@ -155,20 +168,35 @@ static void* pix2pix_thread(void *data) {
         // For other decoder, input is concatenation of previous layer and corresponding encoder layer
         concat(decoder_layer[i + 1], encoder_layer[i], decoder_layer_input[i]);
       }
+      t2 = get_time();
       relu(decoder_layer_input[i], decoder_layer_rectified[i]);
+      t3 = get_time();
       conv2d_transposed(decoder_layer_rectified[i], filter, bias, decoder_layer_convolved[i]);
+      t4 = get_time();
+
+      if (f == 0) printf("FUCK\n%.5f\n%.5f\n%.5f\nFUCK\n", t2 - t1, t3 - t2, t4 - t3);
 
       // Last decoder does not have batchnorm
       if (i == 1) break;
       batchnorm(decoder_layer_convolved[i], scale, offset, decoder_layer[i]);
     }
 
+    tc = get_time();
     // Convert values into [-1, 1] using tanh function
     elem_tanh(decoder_layer_convolved[1], decoder_layer[1]);
+    
+    td = get_time();
 
     // Put a image into output buffer
     postprocess_one_image(decoder_layer[1], output_buf, img_idx);
+
+    te = get_time();
   }
+
+  if (f == 0) {
+    printf("\n%.5f\n%.5f\n%.5f\n%.5f\n%.5f\n", tz - ta, tb - ta, tc - tb, td - tc, te - td);
+  }
+
   return NULL;
 }
 
@@ -346,16 +374,16 @@ void conv2d(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
     for (size_t oh = 0; oh < OH; ++oh) {
       for (size_t ow = 0; ow < OW; ++ow) {
         float x = bias.buf[k];
-        for (size_t c = 0; c < C; ++c) {
-          for (size_t r = 0; r < R; ++r) {
-            for (size_t s = 0; s < S; ++s) {
+        for (size_t r = 0; r < R; ++r) {
+          for (size_t s = 0; s < S; ++s) {
+            for (size_t c = 0; c < C; ++c) {
               // input (oh * stride - pad + r, ow * stride - pad + s, c)
               size_t ih = oh * stride - pad + r;
               size_t iw = ow * stride - pad + s;
               if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
-              float ii = input.buf[ih * W * C + iw * C + c];
+              float ii = input.buf[ih * W * C + iw * C + c]; // [ih][iw][c]
               // filter (r, s, c, k)
-              float ff = filter.buf[r * S * C * K + s * C * K + c * K + k];
+              float ff = filter.buf[r * S * C * K + s * C * K + c * K + k]; // [r][s][c][k]
               x += ii * ff;
             }
           }
@@ -384,9 +412,9 @@ void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output)
     for (size_t oh = 0; oh < OH; ++oh) {
       for (size_t ow = 0; ow < OW; ++ow) {
         float x = bias.buf[k];
-        for (size_t c = 0; c < C; ++c) {
-          for (size_t r = 0; r < R; ++r) {
-            for (size_t s = 0; s < S; ++s) {
+        for (size_t r = 0; r < R; ++r) {
+          for (size_t s = 0; s < S; ++s) {
+            for (size_t c = 0; c < C; ++c) {
               // input ((oh - r + pad) / stride, (ow - s + pad) / stride, c)
               //   where (oh - r + pad) % stride == 0 && (ow - s + pad) % stride == 0
               if ((oh - r + pad) % stride != 0 || (ow - s + pad) % stride != 0) continue;
