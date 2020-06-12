@@ -143,9 +143,14 @@ static void* pix2pix_thread(void *data) {
       auto scale = weights[scope + "/batch_normalization/gamma"];
       auto offset = weights[scope + "/batch_normalization/beta"];
       encoder_layer_input[i] = encoder_layer[i - 1]; // <- dependence
+      t1 = get_time();
       leaky_relu(encoder_layer_input[i], encoder_layer_rectified[i], 0.2);
+      t2 = get_time();
       conv2d(encoder_layer_rectified[i], filter, bias, encoder_layer_convolved[i]);
+      t3 = get_time();
       batchnorm(encoder_layer_convolved[i], scale, offset, encoder_layer[i]);
+      t4 = get_time();
+      if (f == 0) printf("FUCK\n%.5f\n%.5f\n%.5f\nFUCK\n", t2 - t1, t3 - t2, t4 - t3);
     }
 
     tb = get_time();
@@ -160,7 +165,6 @@ static void* pix2pix_thread(void *data) {
       auto bias = weights[scope + "/conv2d_transpose/bias"];
       auto scale = weights[scope + "/batch_normalization/gamma"];
       auto offset = weights[scope + "/batch_normalization/beta"];
-      t1 = get_time();
       if (i == 8) {
         // For decoder 8, input is last layer of encoder
         decoder_layer_input[i] = encoder_layer[8];
@@ -168,13 +172,9 @@ static void* pix2pix_thread(void *data) {
         // For other decoder, input is concatenation of previous layer and corresponding encoder layer
         concat(decoder_layer[i + 1], encoder_layer[i], decoder_layer_input[i]);
       }
-      t2 = get_time();
       relu(decoder_layer_input[i], decoder_layer_rectified[i]);
-      t3 = get_time();
       conv2d_transposed(decoder_layer_rectified[i], filter, bias, decoder_layer_convolved[i]);
-      t4 = get_time();
 
-      if (f == 0) printf("FUCK\n%.5f\n%.5f\n%.5f\nFUCK\n", t2 - t1, t3 - t2, t4 - t3);
 
       // Last decoder does not have batchnorm
       if (i == 1) break;
@@ -370,9 +370,9 @@ void conv2d(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
   size_t OH = H / stride, OW = W / stride;
   output.alloc_once({OH, OW, K});
 
-  for (size_t k = 0; k < K; ++k) {
-    for (size_t oh = 0; oh < OH; ++oh) {
-      for (size_t ow = 0; ow < OW; ++ow) {
+  for (size_t oh = 0; oh < OH; ++oh) {
+    for (size_t ow = 0; ow < OW; ++ow) {
+      for (size_t k = 0; k < K; ++k) {
         float x = bias.buf[k];
         for (size_t r = 0; r < R; ++r) {
           for (size_t s = 0; s < S; ++s) {
@@ -408,9 +408,9 @@ void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output)
   size_t OH = H * stride, OW = W * stride;
   output.alloc_once({OH, OW, K});
 
-  for (size_t k = 0; k < K; ++k) {
-    for (size_t oh = 0; oh < OH; ++oh) {
-      for (size_t ow = 0; ow < OW; ++ow) {
+  for (size_t oh = 0; oh < OH; ++oh) {
+    for (size_t ow = 0; ow < OW; ++ow) {
+      for (size_t k = 0; k < K; ++k) {
         float x = bias.buf[k];
         for (size_t r = 0; r < R; ++r) {
           for (size_t s = 0; s < S; ++s) {
