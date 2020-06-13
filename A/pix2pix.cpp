@@ -372,7 +372,6 @@ void conv2d(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
   size_t OH = H / stride, OW = W / stride;
   output.alloc_once({OH, OW, K});
 
-  printf("H W C R S K: %d %d %d %d %d %d\n", H, W, C, R, S, K);
 
   for (size_t ohoh = 0; ohoh < OH; ohoh += BLOCK_SIZE) {
     size_t oh_end = ohoh + BLOCK_SIZE > OH ? OH : ohoh + BLOCK_SIZE;
@@ -425,6 +424,8 @@ void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output)
   const size_t stride = 2, pad = 1;
   size_t OH = H * stride, OW = W * stride;
   output.alloc_once({OH, OW, K});
+  
+  printf("H W C R S K: %d %d %d %d %d %d\n", H, W, C, R, S, K);
 
   for (size_t ohoh = 0; ohoh < OH; ohoh += BLOCK_SIZE) {
     size_t oh_end = ohoh + BLOCK_SIZE > OH ? OH : ohoh + BLOCK_SIZE;
@@ -433,26 +434,33 @@ void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output)
   for (size_t oh = ohoh; oh < oh_end; ++oh) {
     for (size_t ow = owow; ow < ow_end; ++ow) {
       for (size_t k = 0; k < K; ++k) {
-        float x = bias.buf[k];
-        for (size_t r = 0; r < R; ++r) {
-          for (size_t s = 0; s < S; ++s) {
-              // input ((oh - r + pad) / stride, (ow - s + pad) / stride, c)
-              //   where (oh - r + pad) % stride == 0 && (ow - s + pad) % stride == 0
-            if ((oh - r + pad) % stride != 0 || (ow - s + pad) % stride != 0) continue;
-            size_t ih = (oh - r + pad) / stride;
-            size_t iw = (ow - s + pad) / stride;
-            if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
-            for (size_t c = 0; c < C; ++c) {
+        output.buf[oh * OW * K + ow * K + k] = bias.buf[k];
+      }
+      for (size_t r = 0; r < R; ++r) {
+        for (size_t s = 0; s < S; ++s) {
+            // input ((oh - r + pad) / stride, (ow - s + pad) / stride, c)
+            //   where (oh - r + pad) % stride == 0 && (ow - s + pad) % stride == 0
+          if ((oh - r + pad) % stride != 0 || (ow - s + pad) % stride != 0) continue;
+          size_t ih = (oh - r + pad) / stride;
+          size_t iw = (ow - s + pad) / stride;
+          if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
+          for (size_t kk = 0; kk < K; kk += BLOCK_SIZE) {
+            size_t k_end = kk + BLOCK_SIZE > K ? K : kk + BLOCK_SIZE;
+          for (size_t cc = 0; cc < C; cc += BLOCK_SIZE) {
+            size_t c_end = cc + BLOCK_SIZE > C ? C : cc + BLOCK_SIZE;
+          for (size_t k = kk; k < k_end; ++k) {
+            float x = 0.0f;
+            for (size_t c = cc; c < c_end; ++c) {
               float ii = input.buf[ih * W * C + iw * C + c];
               // filter (r, s, k, c)
               float ff = filter.buf[r * S * K * C + s * K * C + k * C + c];
               x += ii * ff;
             }
+            output.buf[oh * OW * K + ow * K + k] += x;
+          }
+          }
           }
         }
-
-        // output (oh, ow, k)
-        output.buf[oh * OW * K + ow * K + k] = x;
       }
     }
   }
