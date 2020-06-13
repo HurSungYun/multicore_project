@@ -380,24 +380,26 @@ void conv2d(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
     size_t ow_end = owow + BLOCK_SIZE > OW ? OW : owow + BLOCK_SIZE;
   for (size_t oh = ohoh; oh < oh_end; ++oh) {
     for (size_t ow = owow; ow < ow_end; ++ow) {
-      for (size_t k = 0; k < K; ++k) {
-        float x = bias.buf[k];
-        for (size_t r = 0; r < R; ++r) {
-          for (size_t s = 0; s < S; ++s) {
-              // input (oh * stride - pad + r, ow * stride - pad + s, c)
-            size_t ih = oh * stride - pad + r;
-            size_t iw = ow * stride - pad + s;
-            if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
+      for (size_t k = 0; k < K; k++) {
+        output.buf[oh * OW * K + ow * K + k] = bias.buf[k];
+      }
+      for (size_t r = 0; r < R; ++r) {
+        for (size_t s = 0; s < S; ++s) {
+            // input (oh * stride - pad + r, ow * stride - pad + s, c)
+          size_t ih = oh * stride - pad + r;
+          size_t iw = ow * stride - pad + s;
+          if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
+          for (size_t k = 0; k < K; ++k) {
+            float x = 0.0f;
             for (size_t c = 0; c < C; ++c) {
               float ii = input.buf[ih * W * C + iw * C + c]; // [ih][iw][c]
               // filter (r, s, c, k)
               float ff = filter.buf[r * S * C * K + s * C * K + c * K + k]; // [r][s][c][k]
               x += ii * ff;
             }
+            output.buf[oh * OW * K + ow * K + k] += x;
           }
         }
-        // output (oh, ow, k)
-        output.buf[oh * OW * K + ow * K + k] = x;
       }
     }
   }
