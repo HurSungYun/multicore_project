@@ -376,11 +376,11 @@ void conv2d(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
         float x = bias.buf[k];
         for (size_t r = 0; r < R; ++r) {
           for (size_t s = 0; s < S; ++s) {
-            for (size_t c = 0; c < C; ++c) {
               // input (oh * stride - pad + r, ow * stride - pad + s, c)
-              size_t ih = oh * stride - pad + r;
-              size_t iw = ow * stride - pad + s;
-              if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
+            size_t ih = oh * stride - pad + r;
+            size_t iw = ow * stride - pad + s;
+            if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
+            for (size_t c = 0; c < C; ++c) {
               float ii = input.buf[ih * W * C + iw * C + c]; // [ih][iw][c]
               // filter (r, s, c, k)
               float ff = filter.buf[r * S * C * K + s * C * K + c * K + k]; // [r][s][c][k]
@@ -414,13 +414,13 @@ void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output)
         float x = bias.buf[k];
         for (size_t r = 0; r < R; ++r) {
           for (size_t s = 0; s < S; ++s) {
-            for (size_t c = 0; c < C; ++c) {
               // input ((oh - r + pad) / stride, (ow - s + pad) / stride, c)
               //   where (oh - r + pad) % stride == 0 && (ow - s + pad) % stride == 0
-              if ((oh - r + pad) % stride != 0 || (ow - s + pad) % stride != 0) continue;
-              size_t ih = (oh - r + pad) / stride;
-              size_t iw = (ow - s + pad) / stride;
-              if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
+            if ((oh - r + pad) % stride != 0 || (ow - s + pad) % stride != 0) continue;
+            size_t ih = (oh - r + pad) / stride;
+            size_t iw = (ow - s + pad) / stride;
+            if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
+            for (size_t c = 0; c < C; ++c) {
               float ii = input.buf[ih * W * C + iw * C + c];
               // filter (r, s, k, c)
               float ff = filter.buf[r * S * K * C + s * K * C + k * C + c];
