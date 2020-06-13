@@ -128,6 +128,8 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
   Tensor decoder_layer_convolved[9];
   Tensor decoder_layer[9];
 
+  double t1, t2;
+
   for (size_t img_idx = 0; img_idx < num_image; ++img_idx) {
     // Pick 1 image out of num_image
     get_one_image(input, one_image, img_idx);
@@ -139,7 +141,7 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
     // Encoder 1 : conv
     auto filter = weights["generator/encoder_1/conv2d/kernel"];
     auto bias = weights["generator/encoder_1/conv2d/bias"];
-    conv2d(one_image, filter, bias, encoder_layer[1]);
+    conv2d_gpu(one_image, filter, bias, encoder_layer[1]);
 
     for (int i = 2; i <= 8; ++i) {
       // Encoder i : leaky_relu => conv2d => batchnorm
@@ -148,10 +150,14 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
       auto bias = weights[scope + "/conv2d/bias"];
       auto scale = weights[scope + "/batch_normalization/gamma"];
       auto offset = weights[scope + "/batch_normalization/beta"];
+
       encoder_layer_input[i] = encoder_layer[i - 1];
       leaky_relu(encoder_layer_input[i], encoder_layer_rectified[i], 0.2);
       //conv2d(encoder_layer_rectified[i], filter, bias, encoder_layer_convolved[i]);
+      t1 = get_time();
       conv2d_gpu(encoder_layer_rectified[i], filter, bias, encoder_layer_convolved[i]);
+      t2 = get_time();
+      printf("\nFUCK\n%.5f\n", t2 - t1);
       batchnorm(encoder_layer_convolved[i], scale, offset, encoder_layer[i]);
     }
 
@@ -391,9 +397,15 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
   size_t OH = H / stride, OW = W / stride;
   output.alloc_once({OH, OW, K});
 
+  printf("\nK: %d\n", K);
+
   if (R != 4 || S != 4) {
       printf("\nFUCK %d %d\n", R, S);
   }
+
+  double t1, t2, t3, t4;
+
+  t1 = get_time();
 
   size_t gws[2] = {OH, OW}, lws[2] = {BLOCK_SIZE, BLOCK_SIZE};
   for (int i = 0; i < 2; i++) {
@@ -429,6 +441,8 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
   CHECK_ERROR(err);
   err = clSetKernelArg(kernel_conv2d, 9, sizeof(int), &K);
   CHECK_ERROR(err);
+
+  t2 = get_time();
   
   err = clEnqueueWriteBuffer(queue, input_d, CL_TRUE, 0, H * W * C * sizeof(float), input.buf, 0, NULL, NULL);
   CHECK_ERROR(err);
@@ -437,11 +451,17 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
   err = clEnqueueWriteBuffer(queue, bias_d, CL_TRUE, 0, K * sizeof(float), bias.buf, 0, NULL, NULL);
   CHECK_ERROR(err);
 
+  t3 = get_time();
+
   err = clEnqueueNDRangeKernel(queue, kernel_conv2d, 2, NULL, gws, lws, 0, NULL, NULL);
   CHECK_ERROR(err);
 
   err = clEnqueueReadBuffer(queue, output_d, CL_TRUE, 0, OH * OW * K * sizeof(float), output.buf, 0, NULL, NULL);
   CHECK_ERROR(err);
+
+  t4 = get_time();
+
+  printf("\nKILL\n%.5f\n%.5f\n%.5f\nKILL\n", t2 - t1, t3 - t2, t4 - t3);
   
   err = clFinish(queue);
   CHECK_ERROR(err);
@@ -460,13 +480,13 @@ void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output)
   size_t OH = H * stride, OW = W * stride;
   output.alloc_once({OH, OW, K});
 
-  for (size_t k = 0; k < K; ++k) {
-    for (size_t oh = 0; oh < OH; ++oh) {
-      for (size_t ow = 0; ow < OW; ++ow) {
+  for (size_t oh = 0; oh < OH; ++oh) {
+    for (size_t ow = 0; ow < OW; ++ow) {
+      for (size_t k = 0; k < K; ++k) {
         float x = bias.buf[k];
-        for (size_t c = 0; c < C; ++c) {
-          for (size_t r = 0; r < R; ++r) {
-            for (size_t s = 0; s < S; ++s) {
+        for (size_t r = 0; r < R; ++r) {
+          for (size_t s = 0; s < S; ++s) {
+            for (size_t c = 0; c < C; ++c) {
               // input ((oh - r + pad) / stride, (ow - s + pad) / stride, c)
               //   where (oh - r + pad) % stride == 0 && (ow - s + pad) % stride == 0
               if ((oh - r + pad) % stride != 0 || (ow - s + pad) % stride != 0) continue;

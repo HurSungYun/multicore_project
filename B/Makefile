@@ -16,4 +16,4 @@ clean:
 	rm -rf $(TARGET) $(OBJECTS)
 
 run: $(TARGET)
-	thorq --add ./$(TARGET) ../common/edges2cats_AtoB.bin $(ARGS)
+	thorq --add --device gpu/1080 ./$(TARGET) ../common/edges2cats_AtoB.bin $(ARGS)
