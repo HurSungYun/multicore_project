@@ -9,6 +9,7 @@
 
 #define NUM_THREAD 16
 #define BLOCK_SIZE 24
+#define BLOCK_SIZE_K 64
 
 #define LEAKY_RELU_ALPHA 0.2
 
@@ -143,6 +144,7 @@ static void* pix2pix_thread(void *data) {
       auto scale = weights[scope + "/batch_normalization/gamma"];
       auto offset = weights[scope + "/batch_normalization/beta"];
       encoder_layer_input[i] = encoder_layer[i - 1]; // <- dependence
+      if (f == 0) printf("\n HWC: %d %d %d\n", encoder_layer_input[i].shape[0], encoder_layer_input[i].shape[1], encoder_layer_input[i].shape[2]);
       t1 = get_time();
       leaky_relu(encoder_layer_input[i], encoder_layer_rectified[i], 0.2);
       t2 = get_time();
@@ -370,8 +372,14 @@ void conv2d(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
   size_t OH = H / stride, OW = W / stride;
   output.alloc_once({OH, OW, K});
 
-  for (size_t oh = 0; oh < OH; ++oh) {
-    for (size_t ow = 0; ow < OW; ++ow) {
+  printf("H W C R S K: %d %d %d %d %d %d\n", H, W, C, R, S, K);
+
+  for (size_t ohoh = 0; ohoh < OH; ohoh += BLOCK_SIZE) {
+    size_t oh_end = ohoh + BLOCK_SIZE > OH ? OH : ohoh + BLOCK_SIZE;
+  for (size_t owow = 0; owow < OW; owow += BLOCK_SIZE) {
+    size_t ow_end = owow + BLOCK_SIZE > OW ? OW : owow + BLOCK_SIZE;
+  for (size_t oh = ohoh; oh < oh_end; ++oh) {
+    for (size_t ow = owow; ow < ow_end; ++ow) {
       for (size_t k = 0; k < K; ++k) {
         float x = bias.buf[k];
         for (size_t r = 0; r < R; ++r) {
@@ -393,6 +401,8 @@ void conv2d(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
       }
     }
   }
+  }
+  }
 }
 
 // Transposed convolution (2-dimension, stride = 2, pad = 1)
@@ -408,8 +418,12 @@ void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output)
   size_t OH = H * stride, OW = W * stride;
   output.alloc_once({OH, OW, K});
 
-  for (size_t oh = 0; oh < OH; ++oh) {
-    for (size_t ow = 0; ow < OW; ++ow) {
+  for (size_t ohoh = 0; ohoh < OH; ohoh += BLOCK_SIZE) {
+    size_t oh_end = ohoh + BLOCK_SIZE > OH ? OH : ohoh + BLOCK_SIZE;
+  for (size_t owow = 0; owow < OW; owow += BLOCK_SIZE) {
+    size_t ow_end = owow + BLOCK_SIZE > OW ? OW : owow + BLOCK_SIZE;
+  for (size_t oh = ohoh; oh < oh_end; ++oh) {
+    for (size_t ow = owow; ow < ow_end; ++ow) {
       for (size_t k = 0; k < K; ++k) {
         float x = bias.buf[k];
         for (size_t r = 0; r < R; ++r) {
@@ -433,6 +447,8 @@ void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output)
         output.buf[oh * OW * K + ow * K + k] = x;
       }
     }
+  }
+  }
   }
 }
 
