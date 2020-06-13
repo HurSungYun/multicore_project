@@ -14,7 +14,7 @@
     exit(EXIT_FAILURE); \
   }
 
-#define BLOCK_SIZE 4
+#define BLOCK_SIZE 2
 
 class Tensor {
 public:
@@ -397,7 +397,7 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
   size_t OH = H / stride, OW = W / stride;
   output.alloc_once({OH, OW, K});
 
-  printf("\nK: %d\n", K);
+  printf("\nH W C K: %d %d %d %d\n", H, W, C, K);
 
   if (R != 4 || S != 4) {
       printf("\nFUCK %d %d\n", R, S);
