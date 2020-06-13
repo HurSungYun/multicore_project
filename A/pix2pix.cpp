@@ -412,12 +412,8 @@ void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output)
     for (size_t ow = 0; ow < OW; ++ow) {
       for (size_t k = 0; k < K; ++k) {
         float x = bias.buf[k];
-        for (size_t rr = 0; rr < R; rr += BLOCK_SIZE) {
-          size_t r_end = rr + BLOCK_SIZE > R ? R : rr + BLOCK_SIZE;
-        for (size_t ss = 0; ss < S; ss += BLOCK_SIZE) {
-          size_t s_end = ss + BLOCK_SIZE > S ? S : ss + BLOCK_SIZE;
-        for (size_t r = 0; r < r_end; ++r) {
-          for (size_t s = 0; s < s_end; ++s) {
+        for (size_t r = 0; r < R; ++r) {
+          for (size_t s = 0; s < S; ++s) {
             for (size_t c = 0; c < C; ++c) {
               // input ((oh - r + pad) / stride, (ow - s + pad) / stride, c)
               //   where (oh - r + pad) % stride == 0 && (ow - s + pad) % stride == 0
@@ -433,8 +429,6 @@ void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output)
           }
         }
 
-        }
-        }
         // output (oh, ow, k)
         output.buf[oh * OW * K + ow * K + k] = x;
       }
