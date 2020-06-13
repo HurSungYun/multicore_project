@@ -63,6 +63,7 @@ static cl_kernel kernel_conv2d, kernel_conv2d_transpose;
 static cl_program create_and_build_program_with_source(cl_context context, cl_device_id device, const char *file_name);
 
 void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output);
+void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output);
 
 static void print_device_info(cl_device_id device) {
   size_t sz;
@@ -99,8 +100,10 @@ void pix2pix_init() {
   kernel_conv2d = clCreateKernel(program, "conv2d", &err);
   CHECK_ERROR(err);
 
-  // kernel_conv2d_transpose = clCreateKernel(program, "conv2d_transpose", &err);
-  // CHECK_ERROR(err);
+  kernel_conv2d_transpose = clCreateKernel(program, "conv2d_transpose", &err);
+  CHECK_ERROR(err);
+
+  
 }
 
 void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t num_image) {
@@ -180,13 +183,13 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
         concat(decoder_layer[i + 1], encoder_layer[i], decoder_layer_input[i]);
       }
       relu(decoder_layer_input[i], decoder_layer_rectified[i]);
-      conv2d_transposed(decoder_layer_rectified[i], filter, bias, decoder_layer_convolved[i]);
+      //conv2d_transposed(decoder_layer_rectified[i], filter, bias, decoder_layer_convolved[i]);
+      conv2d_transposed_gpu(decoder_layer_rectified[i], filter, bias, decoder_layer_convolved[i]);
 
       // Last decoder does not have batchnorm
       if (i == 1) break;
       batchnorm(decoder_layer_convolved[i], scale, offset, decoder_layer[i]);
     }
-
     // Convert values into [-1, 1] using tanh function
     elem_tanh(decoder_layer_convolved[1], decoder_layer[1]);
 
@@ -421,6 +424,7 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
   cl_mem output_d = clCreateBuffer(context, CL_MEM_READ_WRITE, OH * OW * K * sizeof(float), NULL, &err);
   CHECK_ERROR(err);
 
+
   err = clSetKernelArg(kernel_conv2d, 0, sizeof(cl_mem), &input_d);
   CHECK_ERROR(err);
   err = clSetKernelArg(kernel_conv2d, 1, sizeof(cl_mem), &filter_d);
@@ -505,6 +509,84 @@ void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output)
       }
     }
   }
+}
+
+void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
+  size_t H = input.shape[0], W = input.shape[1], C = input.shape[2];
+  size_t R = filter.shape[0], S = filter.shape[1], K = filter.shape[2];
+  const size_t stride = 2, pad = 1;
+  size_t OH = H * stride, OW = W * stride;
+  output.alloc_once({OH, OW, K});
+
+  printf("\nH W C K: %d %d %d %d\n", H, W, C, K);
+
+  if (R != 4 || S != 4) {
+      printf("\nFUCK %d %d\n", R, S);
+  }
+
+  double t1, t2, t3, t4;
+
+  t1 = get_time();
+
+  size_t gws[2] = {OH, OW}, lws[2] = {BLOCK_SIZE, BLOCK_SIZE};
+  for (int i = 0; i < 2; i++) {
+    gws[i] = (gws[i] + lws[i] - 1) / lws[i] * lws[i];
+  }
+  cl_mem input_d = clCreateBuffer(context, CL_MEM_READ_WRITE, H * W * C * sizeof(float), NULL, &err);
+  CHECK_ERROR(err);
+  cl_mem filter_d = clCreateBuffer(context, CL_MEM_READ_WRITE, R * S * C * K * sizeof(float), NULL, &err);
+  CHECK_ERROR(err);
+  cl_mem bias_d = clCreateBuffer(context, CL_MEM_READ_WRITE, K * sizeof(float), NULL, &err);
+  CHECK_ERROR(err);
+  cl_mem output_d = clCreateBuffer(context, CL_MEM_READ_WRITE, OH * OW * K * sizeof(float), NULL, &err);
+  CHECK_ERROR(err);
+
+  
+  err = clSetKernelArg(kernel_conv2d_transpose, 0, sizeof(cl_mem), &input_d);
+  CHECK_ERROR(err);
+  err = clSetKernelArg(kernel_conv2d_transpose, 1, sizeof(cl_mem), &filter_d);
+  CHECK_ERROR(err);
+  err = clSetKernelArg(kernel_conv2d_transpose, 2, sizeof(cl_mem), &bias_d);
+  CHECK_ERROR(err);
+  err = clSetKernelArg(kernel_conv2d_transpose, 3, sizeof(cl_mem), &output_d);
+  CHECK_ERROR(err);
+  err = clSetKernelArg(kernel_conv2d_transpose, 4, sizeof(int), &H);
+  CHECK_ERROR(err);
+  err = clSetKernelArg(kernel_conv2d_transpose, 5, sizeof(int), &W);
+  CHECK_ERROR(err);
+  err = clSetKernelArg(kernel_conv2d_transpose, 6, sizeof(int), &C);
+  CHECK_ERROR(err);
+  err = clSetKernelArg(kernel_conv2d_transpose, 7, sizeof(int), &R);
+  CHECK_ERROR(err);
+  err = clSetKernelArg(kernel_conv2d_transpose, 8, sizeof(int), &S);
+  CHECK_ERROR(err);
+  err = clSetKernelArg(kernel_conv2d_transpose, 9, sizeof(int), &K);
+  CHECK_ERROR(err);
+
+  t2 = get_time();
+  
+  err = clEnqueueWriteBuffer(queue, input_d, CL_TRUE, 0, H * W * C * sizeof(float), input.buf, 0, NULL, NULL);
+  CHECK_ERROR(err);
+  err = clEnqueueWriteBuffer(queue, filter_d, CL_TRUE, 0, R * S * C * K * sizeof(float), filter.buf, 0, NULL, NULL);
+  CHECK_ERROR(err);
+  err = clEnqueueWriteBuffer(queue, bias_d, CL_TRUE, 0, K * sizeof(float), bias.buf, 0, NULL, NULL);
+  CHECK_ERROR(err);
+
+  t3 = get_time();
+
+  err = clEnqueueNDRangeKernel(queue, kernel_conv2d_transpose, 2, NULL, gws, lws, 0, NULL, NULL);
+  CHECK_ERROR(err);
+
+  err = clEnqueueReadBuffer(queue, output_d, CL_TRUE, 0, OH * OW * K * sizeof(float), output.buf, 0, NULL, NULL);
+  CHECK_ERROR(err);
+
+  t4 = get_time();
+
+  printf("\nTRANSPOSE\n%.5f\n%.5f\n%.5f\nTRANSPOSE\n", t2 - t1, t3 - t2, t4 - t3);
+  
+  err = clFinish(queue);
+  CHECK_ERROR(err);
+
 }
 
 // Leaky ReLU

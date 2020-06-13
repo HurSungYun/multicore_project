@@ -87,3 +87,36 @@ __kernel void conv2d(__global float *input, __global float *filter, __global flo
   }
 
 }
+
+
+__kernel void conv2d_transpose(__global float *input, __global float *filter, __global float *bias, __global float *output, int H, int W, int C, int R, int S, int K) {
+  int local_h = get_local_id(0);
+  int local_w = get_local_id(1);
+  int oh = get_group_id(0) * BLOCK_SIZE + get_local_id(0);
+  int ow = get_group_id(1) * BLOCK_SIZE + get_local_id(1);
+
+  int OH = H * STRIDE;
+  int OW = W * STRIDE;
+
+  for (size_t k = 0; k < K; ++k) {
+    float x = bias[k];
+    for (size_t r = 0; r < R; ++r) {
+      for (size_t s = 0; s < S; ++s) {
+        for (size_t c = 0; c < C; ++c) {
+          // input ((oh - r + pad) / stride, (ow - s + pad) / stride, c)
+          //   where (oh - r + pad) % stride == 0 && (ow - s + pad) % stride == 0
+          if ((oh - r + PAD) % STRIDE != 0 || (ow - s + PAD) % STRIDE != 0) continue;
+          size_t ih = (oh - r + PAD) / STRIDE;
+          size_t iw = (ow - s + PAD) / STRIDE;
+          if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
+          float ii = input[ih * W * C + iw * C + c];
+          // filter (r, s, k, c)
+          float ff = filter[r * S * K * C + s * K * C + k * C + c];
+          x += ii * ff;
+        }
+      }
+    }
+    // output (oh, ow, k)
+    if (ow < OW && oh < OH) output[oh * OW * K + ow * K + k] = x;
+  }
+}
