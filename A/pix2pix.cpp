@@ -389,15 +389,21 @@ void conv2d(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
           size_t ih = oh * stride - pad + r;
           size_t iw = ow * stride - pad + s;
           if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
-          for (size_t k = 0; k < K; ++k) {
+          for (size_t kk = 0; kk < K; kk += BLOCK_SIZE) {
+            size_t k_end = kk + BLOCK_SIZE > K ? K : kk + BLOCK_SIZE;
+          for (size_t cc = 0; cc < C; cc += BLOCK_SIZE) {
+            size_t c_end = cc + BLOCK_SIZE > C ? C : cc + BLOCK_SIZE;
+          for (size_t k = kk; k < k_end; ++k) {
             float x = 0.0f;
-            for (size_t c = 0; c < C; ++c) {
+            for (size_t c = cc; c < c_end; ++c) {
               float ii = input.buf[ih * W * C + iw * C + c]; // [ih][iw][c]
               // filter (r, s, c, k)
               float ff = filter.buf[r * S * C * K + s * C * K + c * K + k]; // [r][s][c][k]
               x += ii * ff;
             }
             output.buf[oh * OW * K + ow * K + k] += x;
+          }
+          }
           }
         }
       }
