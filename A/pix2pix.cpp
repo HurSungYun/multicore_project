@@ -7,7 +7,7 @@
 #include <map>
 #include <cmath>
 
-#define NUM_THREAD 16
+#define NUM_THREAD 32
 #define BLOCK_SIZE 24
 #define BLOCK_SIZE_K 64
 
@@ -83,8 +83,8 @@ void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size
   weights = register_weights(weight_buf); // Memory allocated for weights
   input = preprocess(input_buf, num_image); // Memory allocated for input
 
-  pthread_t thread[48];
-  int params[48];
+  pthread_t thread[NUM_THREAD];
+  int params[NUM_THREAD];
 
   for (int i = 0; i < NUM_THREAD; i++) {
     params[i] = i;
