@@ -20,11 +20,11 @@ __kernel void conv2d(__global float *input, __global float *filter, __global flo
 
   float x = k < K ? bias[k] : 0;
 
+  int tiles = (C + CACHE_SIZE - 1) / CACHE_SIZE;
   for (int r = 0; r < R; r++) {
     for (int s = 0; s < S; s++) {
       int iw = ow * STRIDE - PAD + s;
       int ih = oh * STRIDE - PAD + r;
-      int tiles = (C + CACHE_SIZE - 1) / CACHE_SIZE;
       for (int t = 0; t < tiles; t++) {
         int c_base = t * CACHE_SIZE;
         int c = c_base + local_c;
@@ -52,22 +52,6 @@ __kernel void conv2d(__global float *input, __global float *filter, __global flo
   }
   if (ow < OW && oh < OH && k < K) output[oh * OW * K + ow * K + k] = x;
 
-/*
-    float x = bias[k];
-    for (int r = 0; r < R; ++r) {
-      for (int s = 0; s < S; ++s) {
-        for (int c = 0; c < C; ++c) {
-          int iw = ow * STRIDE - PAD + s;
-          int ih = oh * STRIDE - PAD + r;
-          if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
-          float ii = input[ih * W * C + iw * C + c];
-          float ff = filter[r * S * C * K + s * C * K + c * K + k];
-          x += ii * ff;
-        }
-      }
-    }
-    if (ow < OW && oh < OH) output[oh * OW * K + ow * K + k] = x;
-*/
 }
 
 
@@ -88,13 +72,13 @@ __kernel void conv2d_transpose(__global float *input, __global float *filter, __
 
   float x = k < K ? bias[k] : 0;
 
+  int tiles = (C + CACHE_SIZE - 1) / CACHE_SIZE;
   for (int r = 0; r < R; ++r) {
     for (int s = 0; s < S; ++s) {
 //      if ((oh - r + PAD) % STRIDE != 0 || (ow - s + PAD) % STRIDE != 0) continue;
       int ih = (oh - r + PAD) / STRIDE;
       int iw = (ow - s + PAD) / STRIDE;
 
-      int tiles = (C + CACHE_SIZE - 1) / CACHE_SIZE;
       for (int t = 0; t < tiles; t++) {
         int c_base = t * CACHE_SIZE;
         int c = c_base + local_c;
