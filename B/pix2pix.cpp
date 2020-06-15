@@ -15,6 +15,7 @@
   }
 
 #define BLOCK_SIZE 2
+#define CACHE_SIZE 64
 
 class Tensor {
 public:
@@ -133,6 +134,8 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
 
   double t1, t2;
 
+  double ts1, ts2, ts3;
+
   for (size_t img_idx = 0; img_idx < num_image; ++img_idx) {
     // Pick 1 image out of num_image
     get_one_image(input, one_image, img_idx);
@@ -140,6 +143,8 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
     /*
      * Encoding phase
      */
+
+    ts1 = get_time();
 
     // Encoder 1 : conv
     auto filter = weights["generator/encoder_1/conv2d/kernel"];
@@ -163,6 +168,8 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
       printf("\nFUCK\n%.5f\n", t2 - t1);
       batchnorm(encoder_layer_convolved[i], scale, offset, encoder_layer[i]);
     }
+
+    ts2 = get_time();
 
     /*
      * Decoding phase
@@ -190,11 +197,17 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
       if (i == 1) break;
       batchnorm(decoder_layer_convolved[i], scale, offset, decoder_layer[i]);
     }
+
+    ts3 = get_time();
+
     // Convert values into [-1, 1] using tanh function
     elem_tanh(decoder_layer_convolved[1], decoder_layer[1]);
 
     // Put a image into output buffer
     postprocess_one_image(decoder_layer[1], output_buf, img_idx);
+
+    printf("\nSUMMARY\nENCODE: %.5f\nDECODE: %.5f\n====\n", ts2 - ts1, ts3 - ts2);
+
   }
 }
 
@@ -410,8 +423,10 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
 
   t1 = get_time();
 
-  size_t gws[2] = {OH, OW}, lws[2] = {BLOCK_SIZE, BLOCK_SIZE};
-  for (int i = 0; i < 2; i++) {
+  int dim = 3;
+
+  size_t gws[3] = {OH, OW, K}, lws[3] = {1, 1, CACHE_SIZE};
+  for (int i = 0; i < dim; i++) {
     gws[i] = (gws[i] + lws[i] - 1) / lws[i] * lws[i];
   }
 
@@ -457,7 +472,7 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
 
   t3 = get_time();
 
-  err = clEnqueueNDRangeKernel(queue, kernel_conv2d, 2, NULL, gws, lws, 0, NULL, NULL);
+  err = clEnqueueNDRangeKernel(queue, kernel_conv2d, dim, NULL, gws, lws, 0, NULL, NULL);
   CHECK_ERROR(err);
 
   err = clEnqueueReadBuffer(queue, output_d, CL_TRUE, 0, OH * OW * K * sizeof(float), output.buf, 0, NULL, NULL);
@@ -528,8 +543,10 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
 
   t1 = get_time();
 
-  size_t gws[2] = {OH, OW}, lws[2] = {BLOCK_SIZE, BLOCK_SIZE};
-  for (int i = 0; i < 2; i++) {
+  int dim = 3;
+
+  size_t gws[3] = {OH, OW, K}, lws[3] = {1, 1, CACHE_SIZE};
+  for (int i = 0; i < dim; i++) {
     gws[i] = (gws[i] + lws[i] - 1) / lws[i] * lws[i];
   }
   cl_mem input_d = clCreateBuffer(context, CL_MEM_READ_WRITE, H * W * C * sizeof(float), NULL, &err);
@@ -574,7 +591,7 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
 
   t3 = get_time();
 
-  err = clEnqueueNDRangeKernel(queue, kernel_conv2d_transpose, 2, NULL, gws, lws, 0, NULL, NULL);
+  err = clEnqueueNDRangeKernel(queue, kernel_conv2d_transpose, dim, NULL, gws, lws, 0, NULL, NULL);
   CHECK_ERROR(err);
 
   err = clEnqueueReadBuffer(queue, output_d, CL_TRUE, 0, OH * OW * K * sizeof(float), output.buf, 0, NULL, NULL);
