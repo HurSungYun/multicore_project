@@ -379,21 +379,22 @@ void conv2d(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
   size_t OH = H / stride, OW = W / stride;
   output.alloc_once({OH, OW, K});
 
-  for (size_t ohoh = 0; ohoh < OH; ohoh += BLOCK_SIZE) {
-    size_t oh_end = ohoh + BLOCK_SIZE > OH ? OH : ohoh + BLOCK_SIZE;
-  for (size_t owow = 0; owow < OW; owow += BLOCK_SIZE) {
-    size_t ow_end = owow + BLOCK_SIZE > OW ? OW : owow + BLOCK_SIZE;
-  for (size_t oh = ohoh; oh < oh_end; ++oh) {
-    for (size_t ow = owow; ow < ow_end; ++ow) {
+  for (size_t oh = 0; oh < OH; oh++) {
+    for (size_t ow = 0; ow < OW; ow++) {
       for (size_t k = 0; k < K; k++) {
         output.buf[oh * OW * K + ow * K + k] = bias.buf[k];
       }
-      for (size_t r = 0; r < R; ++r) {
-        for (size_t s = 0; s < S; ++s) {
-            // input (oh * stride - pad + r, ow * stride - pad + s, c)
-          size_t ih = oh * stride - pad + r;
-          size_t iw = ow * stride - pad + s;
-          if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
+    }
+  }
+
+  for (size_t r = 0; r < R; ++r) {
+  for (size_t s = 0; s < S; ++s) {
+  for (size_t oh = 0; oh < OH; ++oh) {
+    size_t ih = oh * stride - pad + r;
+    if (ih < 0 || ih >= H) continue;
+    for (size_t ow = 0; ow < OW; ++ow) {
+      size_t iw = ow * stride - pad + s;
+      if (iw < 0 || iw >= W) continue;
           for (size_t kk = 0; kk < K; kk += BLOCK_SIZE) {
             size_t k_end = kk + BLOCK_SIZE > K ? K : kk + BLOCK_SIZE;
           for (size_t cc = 0; cc < C; cc += BLOCK_SIZE) {
@@ -410,8 +411,6 @@ void conv2d(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
           }
           }
           }
-        }
-      }
     }
   }
   }
