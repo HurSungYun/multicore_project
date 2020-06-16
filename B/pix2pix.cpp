@@ -18,7 +18,7 @@
 #define BLOCK_SIZE 2
 #define CACHE_SIZE 64
 
-#define NUM_THREAD 8
+#define NUM_THREAD 16
 
 class Tensor {
 public:
