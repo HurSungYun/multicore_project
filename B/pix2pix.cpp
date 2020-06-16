@@ -18,7 +18,7 @@
 #define BLOCK_SIZE 2
 #define CACHE_SIZE 64
 
-#define NUM_THREAD 16
+#define NUM_THREAD 8
 
 class Tensor {
 public:
@@ -486,7 +486,16 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int id
 
   err = clEnqueueReadBuffer(data_queue, output_d, CL_TRUE, 0, OH * OW * K * sizeof(float), output.buf, 1, &compute_wait, NULL); // output_wait
   CHECK_ERROR(err);
-
+  
+  err = clReleaseMemObject(input_d);
+  CHECK_ERROR(err);
+  err = clReleaseMemObject(filter_d);
+  CHECK_ERROR(err);
+  err = clReleaseMemObject(bias_d);
+  CHECK_ERROR(err);
+  err = clReleaseMemObject(output_d);
+  CHECK_ERROR(err);
+  
   t4 = get_time();
 
   printf("\nKILL\n%.5f\n%.5f\n%.5f\nKILL\n", t2 - t1, t3 - t2, t4 - t3);
@@ -570,6 +579,16 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
 
   err = clEnqueueReadBuffer(data_queue, output_d, CL_TRUE, 0, OH * OW * K * sizeof(float), output.buf, 1, &compute_wait, NULL);
   CHECK_ERROR(err);
+
+  err = clReleaseMemObject(input_d);
+  CHECK_ERROR(err);
+  err = clReleaseMemObject(filter_d);
+  CHECK_ERROR(err);
+  err = clReleaseMemObject(bias_d);
+  CHECK_ERROR(err);
+  err = clReleaseMemObject(output_d);
+  CHECK_ERROR(err);
+ 
 
   t4 = get_time();
 
