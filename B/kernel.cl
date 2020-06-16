@@ -22,16 +22,14 @@ __kernel void conv2d(__global float *input, __global float *filter, __global flo
 
   int tiles = (C + CACHE_SIZE - 1) / CACHE_SIZE;
   for (int r = 0; r < R; r++) {
+    int ih = oh * STRIDE - PAD + r;
+    if (ih < 0 || ih >= H) continue;
     for (int s = 0; s < S; s++) {
       int iw = ow * STRIDE - PAD + s;
-      int ih = oh * STRIDE - PAD + r;
+      if (iw < 0 || iw >= W) continue;
       for (int t = 0; t < tiles; t++) {
         int c_base = t * CACHE_SIZE;
         int c = c_base + local_c;
-      if (ih < 0 || ih >= H || iw < 0 || iw >= W) { 
-        barrier(CLK_LOCAL_MEM_FENCE);
-        barrier(CLK_LOCAL_MEM_FENCE);
-      } else {
         if (c < C) {
           local_input[local_c] = input[ih * W * C + iw * C + c_base + local_c];
         } else {
@@ -46,7 +44,6 @@ __kernel void conv2d(__global float *input, __global float *filter, __global flo
           }
         }
         barrier(CLK_LOCAL_MEM_FENCE);
-      }
       }
     }
   }
