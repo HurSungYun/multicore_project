@@ -3,7 +3,7 @@ OBJECTS=util.o pix2pix.o
 
 CXX=g++
 CXXFLAGS=-std=c++11 -Wall -O3 -mavx
-LDFLAGS=-lm -lOpenCL
+LDFLAGS=-lm -lOpenCL -pthread
 # If you use MPI, use the following lines instead of above lines
 #CXX=mpic++
 #CXXFLAGS=-std=c++11 -Wall -O3 -DUSE_MPI

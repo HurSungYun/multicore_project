@@ -2,6 +2,7 @@
 
 #include "util.h"
 
+#include <pthread.h>
 #include <string>
 #include <map>
 #include <cmath>
@@ -16,6 +17,8 @@
 
 #define BLOCK_SIZE 2
 #define CACHE_SIZE 64
+
+#define NUM_THREAD 8
 
 class Tensor {
 public:
@@ -57,14 +60,14 @@ static cl_int err;
 static cl_platform_id platform;
 static cl_device_id device;
 static cl_context context;
-static cl_command_queue queue;
+static cl_command_queue data_queue, compute_queue;
 static cl_program program;
-static cl_kernel kernel_conv2d, kernel_conv2d_transpose;
+static cl_kernel kernel_conv2d[NUM_THREAD], kernel_conv2d_transpose[NUM_THREAD];
 
 static cl_program create_and_build_program_with_source(cl_context context, cl_device_id device, const char *file_name);
 
-void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output);
-void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output);
+void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int idx);
+void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int idx);
 
 static void print_device_info(cl_device_id device) {
   size_t sz;
@@ -93,21 +96,35 @@ void pix2pix_init() {
   context = clCreateContext(NULL, 1, &device, NULL, NULL, &err);
   CHECK_ERROR(err);
 
-  queue = clCreateCommandQueue(context, device, 0, &err);
+  data_queue = clCreateCommandQueue(context, device, 0, &err);
+  CHECK_ERROR(err);
+
+  compute_queue = clCreateCommandQueue(context, device, 0, &err);
   CHECK_ERROR(err);
 
   program = create_and_build_program_with_source(context, device, "kernel.cl");
 
-  kernel_conv2d = clCreateKernel(program, "conv2d", &err);
-  CHECK_ERROR(err);
+  for (int i = 0; i < NUM_THREAD; i++) {
+    kernel_conv2d[i] = clCreateKernel(program, "conv2d", &err);
+    CHECK_ERROR(err);
 
-  kernel_conv2d_transpose = clCreateKernel(program, "conv2d_transpose", &err);
-  CHECK_ERROR(err);
-
+    kernel_conv2d_transpose[i] = clCreateKernel(program, "conv2d_transpose", &err);
+    CHECK_ERROR(err);
+  }
   
 }
 
-void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t num_image) {
+static uint8_t *input_buf;
+static float *weight_buf;
+static uint8_t *output_buf;
+size_t num_image;
+
+std::map<std::string, Tensor> weights;
+Tensor input;
+
+static void* pix2pix_thread(void *data);
+
+void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size_t _num_image) {
   /*
    * !!!!!!!! Caution !!!!!!!!
    * In MPI program, all buffers and num_image are only given to rank 0 process.
@@ -116,9 +133,28 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
    *   2. send inputs from rank 0 to others
    *   3. gather outputs from others to rank 0
    */
+  input_buf = _input_buf;
+  weight_buf = _weight_buf;
+  output_buf = _output_buf;
+  num_image = _num_image;
 
-  auto weights = register_weights(weight_buf); // Memory allocated for weights
-  auto input = preprocess(input_buf, num_image); // Memory allocated for input
+  weights = register_weights(weight_buf); // Memory allocated for weights
+  input = preprocess(input_buf, num_image); // Memory allocated for input
+
+  pthread_t thread[NUM_THREAD];
+  int params[NUM_THREAD];
+
+  for (int i = 0; i < NUM_THREAD; i++) {
+    params[i] = i;
+    pthread_create(&thread[i], NULL, pix2pix_thread, &params[i]);
+  }
+
+  for (int i = 0; i < NUM_THREAD; i++) {
+    pthread_join(thread[i], NULL);
+  }
+}
+
+static void* pix2pix_thread(void *data) {
 
   // Declare feature maps
   // Memory for feature maps are allocated when they are written first time using Tensor::alloc_once(...)
@@ -132,11 +168,17 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
   Tensor decoder_layer_convolved[9];
   Tensor decoder_layer[9];
 
+
+  size_t idx = *((int *)data);
+  size_t quota = (num_image + NUM_THREAD - 1) / NUM_THREAD;
+  size_t start = idx * quota;
+  size_t end = (idx + 1) * quota > num_image ? num_image : (idx + 1) * quota;
+
   double t1, t2;
 
   double ts1, ts2, ts3;
 
-  for (size_t img_idx = 0; img_idx < num_image; ++img_idx) {
+  for (size_t img_idx = start; img_idx < end; ++img_idx) {
     // Pick 1 image out of num_image
     get_one_image(input, one_image, img_idx);
 
@@ -149,7 +191,7 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
     // Encoder 1 : conv
     auto filter = weights["generator/encoder_1/conv2d/kernel"];
     auto bias = weights["generator/encoder_1/conv2d/bias"];
-    conv2d_gpu(one_image, filter, bias, encoder_layer[1]);
+    conv2d_gpu(one_image, filter, bias, encoder_layer[1], idx);
 
     for (int i = 2; i <= 8; ++i) {
       // Encoder i : leaky_relu => conv2d => batchnorm
@@ -163,7 +205,7 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
       leaky_relu(encoder_layer_input[i], encoder_layer_rectified[i], 0.2);
       //conv2d(encoder_layer_rectified[i], filter, bias, encoder_layer_convolved[i]);
       t1 = get_time();
-      conv2d_gpu(encoder_layer_rectified[i], filter, bias, encoder_layer_convolved[i]);
+      conv2d_gpu(encoder_layer_rectified[i], filter, bias, encoder_layer_convolved[i], idx);
       t2 = get_time();
       printf("\nFUCK\n%.5f\n", t2 - t1);
       batchnorm(encoder_layer_convolved[i], scale, offset, encoder_layer[i]);
@@ -191,7 +233,7 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
       }
       relu(decoder_layer_input[i], decoder_layer_rectified[i]);
       //conv2d_transposed(decoder_layer_rectified[i], filter, bias, decoder_layer_convolved[i]);
-      conv2d_transposed_gpu(decoder_layer_rectified[i], filter, bias, decoder_layer_convolved[i]);
+      conv2d_transposed_gpu(decoder_layer_rectified[i], filter, bias, decoder_layer_convolved[i], idx);
 
       // Last decoder does not have batchnorm
       if (i == 1) break;
@@ -369,44 +411,7 @@ void get_one_image(Tensor input, Tensor &output, size_t idx) {
   }
 }
 
-// Convolution (2-dimension, stride = 2, pad = 1)
-void conv2d(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
-  // input shape = (in_height, in_width, in_channels)
-  // filter shape = (filter_height, filter_width, in_channels, output_channels)
-  // bias shape = (output_channels)
-  // output shape = (in_height / stride, in_width / stride, output_channels)
-  size_t H = input.shape[0], W = input.shape[1], C = input.shape[2];
-  size_t R = filter.shape[0], S = filter.shape[1], K = filter.shape[3];
-  const size_t stride = 2, pad = 1;
-  size_t OH = H / stride, OW = W / stride;
-  output.alloc_once({OH, OW, K});
-
-  for (size_t oh = 0; oh < OH; ++oh) {
-    for (size_t ow = 0; ow < OW; ++ow) {
-      for (size_t k = 0; k < K; ++k) {
-        float x = bias.buf[k];
-        for (size_t c = 0; c < C; ++c) {
-          for (size_t r = 0; r < R; ++r) {
-            for (size_t s = 0; s < S; ++s) {
-              // input (oh * stride - pad + r, ow * stride - pad + s, c)
-              size_t ih = oh * stride - pad + r;
-              size_t iw = ow * stride - pad + s;
-              if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
-              float ii = input.buf[ih * W * C + iw * C + c];
-              // filter (r, s, c, k)
-              float ff = filter.buf[r * S * C * K + s * C * K + c * K + k];
-              x += ii * ff;
-            }
-          }
-        }
-        // output (oh, ow, k)
-        output.buf[oh * OW * K + ow * K + k] = x;
-      }
-    }
-  }
-}
-
-void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
+void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int idx) {
   size_t H = input.shape[0], W = input.shape[1], C = input.shape[2];
   size_t R = filter.shape[0], S = filter.shape[1], K = filter.shape[3];
   const size_t stride = 2, pad = 1;
@@ -440,93 +445,58 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
   CHECK_ERROR(err);
 
 
-  err = clSetKernelArg(kernel_conv2d, 0, sizeof(cl_mem), &input_d);
+  err = clSetKernelArg(kernel_conv2d[idx], 0, sizeof(cl_mem), &input_d);
   CHECK_ERROR(err);
-  err = clSetKernelArg(kernel_conv2d, 1, sizeof(cl_mem), &filter_d);
+  err = clSetKernelArg(kernel_conv2d[idx], 1, sizeof(cl_mem), &filter_d);
   CHECK_ERROR(err);
-  err = clSetKernelArg(kernel_conv2d, 2, sizeof(cl_mem), &bias_d);
+  err = clSetKernelArg(kernel_conv2d[idx], 2, sizeof(cl_mem), &bias_d);
   CHECK_ERROR(err);
-  err = clSetKernelArg(kernel_conv2d, 3, sizeof(cl_mem), &output_d);
+  err = clSetKernelArg(kernel_conv2d[idx], 3, sizeof(cl_mem), &output_d);
   CHECK_ERROR(err);
-  err = clSetKernelArg(kernel_conv2d, 4, sizeof(int), &H);
+  err = clSetKernelArg(kernel_conv2d[idx], 4, sizeof(int), &H);
   CHECK_ERROR(err);
-  err = clSetKernelArg(kernel_conv2d, 5, sizeof(int), &W);
+  err = clSetKernelArg(kernel_conv2d[idx], 5, sizeof(int), &W);
   CHECK_ERROR(err);
-  err = clSetKernelArg(kernel_conv2d, 6, sizeof(int), &C);
+  err = clSetKernelArg(kernel_conv2d[idx], 6, sizeof(int), &C);
   CHECK_ERROR(err);
-  err = clSetKernelArg(kernel_conv2d, 7, sizeof(int), &R);
+  err = clSetKernelArg(kernel_conv2d[idx], 7, sizeof(int), &R);
   CHECK_ERROR(err);
-  err = clSetKernelArg(kernel_conv2d, 8, sizeof(int), &S);
+  err = clSetKernelArg(kernel_conv2d[idx], 8, sizeof(int), &S);
   CHECK_ERROR(err);
-  err = clSetKernelArg(kernel_conv2d, 9, sizeof(int), &K);
+  err = clSetKernelArg(kernel_conv2d[idx], 9, sizeof(int), &K);
   CHECK_ERROR(err);
 
   t2 = get_time();
+
+  cl_event input_wait;
   
-  err = clEnqueueWriteBuffer(queue, input_d, CL_TRUE, 0, H * W * C * sizeof(float), input.buf, 0, NULL, NULL);
+  err = clEnqueueWriteBuffer(data_queue, input_d, CL_TRUE, 0, H * W * C * sizeof(float), input.buf, 0, NULL, NULL);
   CHECK_ERROR(err);
-  err = clEnqueueWriteBuffer(queue, filter_d, CL_TRUE, 0, R * S * C * K * sizeof(float), filter.buf, 0, NULL, NULL);
+  err = clEnqueueWriteBuffer(data_queue, filter_d, CL_TRUE, 0, R * S * C * K * sizeof(float), filter.buf, 0, NULL, NULL);
   CHECK_ERROR(err);
-  err = clEnqueueWriteBuffer(queue, bias_d, CL_TRUE, 0, K * sizeof(float), bias.buf, 0, NULL, NULL);
+  err = clEnqueueWriteBuffer(data_queue, bias_d, CL_TRUE, 0, K * sizeof(float), bias.buf, 0, NULL, &input_wait);
   CHECK_ERROR(err);
 
   t3 = get_time();
 
-  err = clEnqueueNDRangeKernel(queue, kernel_conv2d, dim, NULL, gws, lws, 0, NULL, NULL);
+  cl_event compute_wait;
+
+  err = clEnqueueNDRangeKernel(compute_queue, kernel_conv2d[idx], dim, NULL, gws, lws, 1, &input_wait, &compute_wait);
   CHECK_ERROR(err);
 
-  err = clEnqueueReadBuffer(queue, output_d, CL_TRUE, 0, OH * OW * K * sizeof(float), output.buf, 0, NULL, NULL);
+  err = clEnqueueReadBuffer(data_queue, output_d, CL_TRUE, 0, OH * OW * K * sizeof(float), output.buf, 1, &compute_wait, NULL); // output_wait
   CHECK_ERROR(err);
 
   t4 = get_time();
 
   printf("\nKILL\n%.5f\n%.5f\n%.5f\nKILL\n", t2 - t1, t3 - t2, t4 - t3);
   
-  err = clFinish(queue);
-  CHECK_ERROR(err);
+//  err = clFinish(queue);
+//  CHECK_ERROR(err);
 }
 
-// Transposed convolution (2-dimension, stride = 2, pad = 1)
-void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
-  // input shape = (in_height, in_width, in_channels)
-  // filter shape = (filter_height, filter_width, output_channels, in_channels)
-  // bias shape = (output_channels)
-  // output shape = (in_height * stride, in_width * stride, output_channels)
-  size_t H = input.shape[0], W = input.shape[1], C = input.shape[2];
-  size_t R = filter.shape[0], S = filter.shape[1], K = filter.shape[2];
-  // assume stride 2, pad 1
-  const size_t stride = 2, pad = 1;
-  size_t OH = H * stride, OW = W * stride;
-  output.alloc_once({OH, OW, K});
 
-  for (size_t oh = 0; oh < OH; ++oh) {
-    for (size_t ow = 0; ow < OW; ++ow) {
-      for (size_t k = 0; k < K; ++k) {
-        float x = bias.buf[k];
-        for (size_t r = 0; r < R; ++r) {
-          for (size_t s = 0; s < S; ++s) {
-            for (size_t c = 0; c < C; ++c) {
-              // input ((oh - r + pad) / stride, (ow - s + pad) / stride, c)
-              //   where (oh - r + pad) % stride == 0 && (ow - s + pad) % stride == 0
-              if ((oh - r + pad) % stride != 0 || (ow - s + pad) % stride != 0) continue;
-              size_t ih = (oh - r + pad) / stride;
-              size_t iw = (ow - s + pad) / stride;
-              if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
-              float ii = input.buf[ih * W * C + iw * C + c];
-              // filter (r, s, k, c)
-              float ff = filter.buf[r * S * K * C + s * K * C + k * C + c];
-              x += ii * ff;
-            }
-          }
-        }
-        // output (oh, ow, k)
-        output.buf[oh * OW * K + ow * K + k] = x;
-      }
-    }
-  }
-}
-
-void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
+void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int idx) {
   size_t H = input.shape[0], W = input.shape[1], C = input.shape[2];
   size_t R = filter.shape[0], S = filter.shape[1], K = filter.shape[2];
   const size_t stride = 2, pad = 1;
@@ -559,50 +529,54 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
   CHECK_ERROR(err);
 
   
-  err = clSetKernelArg(kernel_conv2d_transpose, 0, sizeof(cl_mem), &input_d);
+  err = clSetKernelArg(kernel_conv2d_transpose[idx], 0, sizeof(cl_mem), &input_d);
   CHECK_ERROR(err);
-  err = clSetKernelArg(kernel_conv2d_transpose, 1, sizeof(cl_mem), &filter_d);
+  err = clSetKernelArg(kernel_conv2d_transpose[idx], 1, sizeof(cl_mem), &filter_d);
   CHECK_ERROR(err);
-  err = clSetKernelArg(kernel_conv2d_transpose, 2, sizeof(cl_mem), &bias_d);
+  err = clSetKernelArg(kernel_conv2d_transpose[idx], 2, sizeof(cl_mem), &bias_d);
   CHECK_ERROR(err);
-  err = clSetKernelArg(kernel_conv2d_transpose, 3, sizeof(cl_mem), &output_d);
+  err = clSetKernelArg(kernel_conv2d_transpose[idx], 3, sizeof(cl_mem), &output_d);
   CHECK_ERROR(err);
-  err = clSetKernelArg(kernel_conv2d_transpose, 4, sizeof(int), &H);
+  err = clSetKernelArg(kernel_conv2d_transpose[idx], 4, sizeof(int), &H);
   CHECK_ERROR(err);
-  err = clSetKernelArg(kernel_conv2d_transpose, 5, sizeof(int), &W);
+  err = clSetKernelArg(kernel_conv2d_transpose[idx], 5, sizeof(int), &W);
   CHECK_ERROR(err);
-  err = clSetKernelArg(kernel_conv2d_transpose, 6, sizeof(int), &C);
+  err = clSetKernelArg(kernel_conv2d_transpose[idx], 6, sizeof(int), &C);
   CHECK_ERROR(err);
-  err = clSetKernelArg(kernel_conv2d_transpose, 7, sizeof(int), &R);
+  err = clSetKernelArg(kernel_conv2d_transpose[idx], 7, sizeof(int), &R);
   CHECK_ERROR(err);
-  err = clSetKernelArg(kernel_conv2d_transpose, 8, sizeof(int), &S);
+  err = clSetKernelArg(kernel_conv2d_transpose[idx], 8, sizeof(int), &S);
   CHECK_ERROR(err);
-  err = clSetKernelArg(kernel_conv2d_transpose, 9, sizeof(int), &K);
+  err = clSetKernelArg(kernel_conv2d_transpose[idx], 9, sizeof(int), &K);
   CHECK_ERROR(err);
 
   t2 = get_time();
+
+  cl_event data_wait;
   
-  err = clEnqueueWriteBuffer(queue, input_d, CL_TRUE, 0, H * W * C * sizeof(float), input.buf, 0, NULL, NULL);
+  err = clEnqueueWriteBuffer(data_queue, input_d, CL_TRUE, 0, H * W * C * sizeof(float), input.buf, 0, NULL, NULL);
   CHECK_ERROR(err);
-  err = clEnqueueWriteBuffer(queue, filter_d, CL_TRUE, 0, R * S * C * K * sizeof(float), filter.buf, 0, NULL, NULL);
+  err = clEnqueueWriteBuffer(data_queue, filter_d, CL_TRUE, 0, R * S * C * K * sizeof(float), filter.buf, 0, NULL, NULL);
   CHECK_ERROR(err);
-  err = clEnqueueWriteBuffer(queue, bias_d, CL_TRUE, 0, K * sizeof(float), bias.buf, 0, NULL, NULL);
+  err = clEnqueueWriteBuffer(data_queue, bias_d, CL_TRUE, 0, K * sizeof(float), bias.buf, 0, NULL, &data_wait);
   CHECK_ERROR(err);
 
   t3 = get_time();
 
-  err = clEnqueueNDRangeKernel(queue, kernel_conv2d_transpose, dim, NULL, gws, lws, 0, NULL, NULL);
+  cl_event compute_wait;
+
+  err = clEnqueueNDRangeKernel(compute_queue, kernel_conv2d_transpose[idx], dim, NULL, gws, lws, 1, &data_wait, &compute_wait);
   CHECK_ERROR(err);
 
-  err = clEnqueueReadBuffer(queue, output_d, CL_TRUE, 0, OH * OW * K * sizeof(float), output.buf, 0, NULL, NULL);
+  err = clEnqueueReadBuffer(data_queue, output_d, CL_TRUE, 0, OH * OW * K * sizeof(float), output.buf, 1, &compute_wait, NULL);
   CHECK_ERROR(err);
 
   t4 = get_time();
 
   printf("\nTRANSPOSE\n%.5f\n%.5f\n%.5f\nTRANSPOSE\n", t2 - t1, t3 - t2, t4 - t3);
   
-  err = clFinish(queue);
-  CHECK_ERROR(err);
+//  err = clFinish(queue);
+//  CHECK_ERROR(err);
 
 }
 
