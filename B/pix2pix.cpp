@@ -65,7 +65,7 @@ static cl_kernel kernel_conv2d, kernel_conv2d_transpose;
 static cl_program create_and_build_program_with_source(cl_context context, cl_device_id device, const char *file_name);
 
 void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, cl_event &prev_wait, cl_event &wait);
-void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output);
+void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, cl_event &prev_wait, cl_event &wait);
 
 static void print_device_info(cl_device_id device) {
   size_t sz;
@@ -134,6 +134,7 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
   Tensor decoder_layer[9][DOUBLE];
 
   cl_event wait[9][DOUBLE];
+  cl_event wait_trans[9][DOUBLE];
 
   cl_event dummy_wait;
 
@@ -158,6 +159,8 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
     conv2d_gpu(one_image[0], filter, bias, encoder_layer[1][0], dummy_wait, wait[1][0]);
     conv2d_gpu(one_image[1], filter, bias, encoder_layer[1][1], wait[1][0], wait[1][1]);
 
+    cl_event* lastest_wait;
+
     for (int i = 2; i <= 8; ++i) {
       // Encoder i : leaky_relu => conv2d => batchnorm
       auto scope = "generator/encoder_" + std::to_string(i);
@@ -176,7 +179,7 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
       encoder_layer_input[i][1] = encoder_layer[i - 1][1];
       leaky_relu(encoder_layer_input[i][1], encoder_layer_rectified[i][1], 0.2);
       conv2d_gpu(encoder_layer_rectified[i][1], filter, bias, encoder_layer_convolved[i][1], wait[i][0], wait[i][1]);
-     
+
       // POST-PROCESS
 
       t1 = get_time();
@@ -207,24 +210,41 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
       auto bias = weights[scope + "/conv2d_transpose/bias"];
       auto scale = weights[scope + "/batch_normalization/gamma"];
       auto offset = weights[scope + "/batch_normalization/beta"];
+
       if (i == 8) {
         // For decoder 8, input is last layer of encoder
         decoder_layer_input[i][0] = encoder_layer[8][0];
-        decoder_layer_input[i][1] = encoder_layer[8][1];
+        relu(decoder_layer_input[i][0], decoder_layer_rectified[i][0]);
+        conv2d_transposed_gpu(decoder_layer_rectified[i][0], filter, bias, decoder_layer_convolved[i][0], wait[8][1], wait_trans[8][0]);
       } else {
         // For other decoder, input is concatenation of previous layer and corresponding encoder layer
         concat(decoder_layer[i + 1][0], encoder_layer[i][0], decoder_layer_input[i][0]);
-        concat(decoder_layer[i + 1][1], encoder_layer[i][1], decoder_layer_input[i][1]);
+        relu(decoder_layer_input[i][0], decoder_layer_rectified[i][0]);
+        conv2d_transposed_gpu(decoder_layer_rectified[i][0], filter, bias, decoder_layer_convolved[i][0], wait_trans[i + 1][1], wait_trans[i][0]);
       }
-      relu(decoder_layer_input[i][0], decoder_layer_rectified[i][0]);
-      relu(decoder_layer_input[i][1], decoder_layer_rectified[i][1]);
-      //conv2d_transposed(decoder_layer_rectified[i], filter, bias, decoder_layer_convolved[i]);
-      conv2d_transposed_gpu(decoder_layer_rectified[i][0], filter, bias, decoder_layer_convolved[i][0]);
-      conv2d_transposed_gpu(decoder_layer_rectified[i][1], filter, bias, decoder_layer_convolved[i][1]);
+
+      if (i == 8) {
+        decoder_layer_input[i][1] = encoder_layer[8][1];
+        relu(decoder_layer_input[i][1], decoder_layer_rectified[i][1]);
+        conv2d_transposed_gpu(decoder_layer_rectified[i][1], filter, bias, decoder_layer_convolved[i][1], wait_trans[8][0], wait_trans[8][1]);
+      } else {
+        concat(decoder_layer[i + 1][1], encoder_layer[i][1], decoder_layer_input[i][1]);
+        relu(decoder_layer_input[i][1], decoder_layer_rectified[i][1]);
+        conv2d_transposed_gpu(decoder_layer_rectified[i][1], filter, bias, decoder_layer_convolved[i][1], wait_trans[i][0], wait_trans[i][1]);
+      }
+
+
 
       // Last decoder does not have batchnorm
-      if (i == 1) break;
+      if (i == 1) {
+        clWaitForEvents(1, &wait[i][1]);
+        break;
+      }
+
       batchnorm(decoder_layer_convolved[i][0], scale, offset, decoder_layer[i][0]);
+
+      clWaitForEvents(1, &wait[i][1]);
+
       batchnorm(decoder_layer_convolved[i][1], scale, offset, decoder_layer[i][1]);
     }
 
@@ -464,10 +484,7 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, cl_eve
     gws[i] = (gws[i] + lws[i] - 1) / lws[i] * lws[i];
   }
 
-  // here to wait
-  // if (prev_wait != NULL) {
-    clWaitForEvents(1, &prev_wait);
-  // }
+  clWaitForEvents(1, &prev_wait);
 
   cl_mem input_d = clCreateBuffer(context, CL_MEM_READ_WRITE, H * W * C * sizeof(float), NULL, &err);
   CHECK_ERROR(err);
@@ -565,7 +582,7 @@ void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output)
   }
 }
 
-void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
+void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, cl_event &prev_wait, cl_event &wait) {
   size_t H = input.shape[0], W = input.shape[1], C = input.shape[2];
   size_t R = filter.shape[0], S = filter.shape[1], K = filter.shape[2];
   const size_t stride = 2, pad = 1;
@@ -597,6 +614,7 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
   cl_mem output_d = clCreateBuffer(context, CL_MEM_READ_WRITE, OH * OW * K * sizeof(float), NULL, &err);
   CHECK_ERROR(err);
 
+  clWaitForEvents(1, &prev_wait);
   
   err = clSetKernelArg(kernel_conv2d_transpose, 0, sizeof(cl_mem), &input_d);
   CHECK_ERROR(err);
@@ -633,7 +651,7 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
   err = clEnqueueNDRangeKernel(queue, kernel_conv2d_transpose, dim, NULL, gws, lws, 0, NULL, NULL);
   CHECK_ERROR(err);
 
-  err = clEnqueueReadBuffer(queue, output_d, CL_TRUE, 0, OH * OW * K * sizeof(float), output.buf, 0, NULL, NULL);
+  err = clEnqueueReadBuffer(queue, output_d, CL_FALSE, 0, OH * OW * K * sizeof(float), output.buf, 0, NULL, &wait);
   CHECK_ERROR(err);
 
   t4 = get_time();
