@@ -211,6 +211,10 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
       auto scale = weights[scope + "/batch_normalization/gamma"];
       auto offset = weights[scope + "/batch_normalization/beta"];
 
+      double tp1, tp2, tp3, tp4, tp5;
+
+      tp1 = get_time();
+      
       if (i == 8) {
         // For decoder 8, input is last layer of encoder
         decoder_layer_input[i][0] = encoder_layer[8][0];
@@ -218,10 +222,21 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
         conv2d_transposed_gpu(decoder_layer_rectified[i][0], filter, bias, decoder_layer_convolved[i][0], wait[8][1], wait_trans[8][0]);
       } else {
         // For other decoder, input is concatenation of previous layer and corresponding encoder layer
+        double pt1, pt2, pt3, pt4;
+
+        pt1 = get_time();
         concat(decoder_layer[i + 1][0], encoder_layer[i][0], decoder_layer_input[i][0]);
+        pt2 = get_time();
         relu(decoder_layer_input[i][0], decoder_layer_rectified[i][0]);
+        pt3 = get_time();
         conv2d_transposed_gpu(decoder_layer_rectified[i][0], filter, bias, decoder_layer_convolved[i][0], wait_trans[i + 1][1], wait_trans[i][0]);
+        pt4 = get_time();
+
+
+        printf("\na: %.5f, b: %.5f, c: %.5f\n", pt2 - pt1, pt3 - pt2, pt4 - pt3);
       }
+      
+      tp2 = get_time();
 
       if (i == 8) {
         decoder_layer_input[i][1] = encoder_layer[8][1];
@@ -233,19 +248,26 @@ void pix2pix(uint8_t *input_buf, float *weight_buf, uint8_t *output_buf, size_t 
         conv2d_transposed_gpu(decoder_layer_rectified[i][1], filter, bias, decoder_layer_convolved[i][1], wait_trans[i][0], wait_trans[i][1]);
       }
 
+      tp3 = get_time();
 
 
       // Last decoder does not have batchnorm
       if (i == 1) {
-        clWaitForEvents(1, &wait[i][1]);
+        clWaitForEvents(1, &wait_trans[i][1]);
         break;
       }
 
       batchnorm(decoder_layer_convolved[i][0], scale, offset, decoder_layer[i][0]);
 
-      clWaitForEvents(1, &wait[i][1]);
+      tp4 = get_time();
 
-      batchnorm(decoder_layer_convolved[i][1], scale, offset, decoder_layer[i][1]);
+      clWaitForEvents(1, &wait_trans[i][1]);
+
+      batchnorm(decoder_layer_convolved[i][1], scale, offset, decoder_layer[i][1]); // batchnorm here
+      tp5 = get_time();
+
+      printf("\nA: %.5f, B: %.5f, C: %.5f, D: %.5f\n", tp2 - tp1, tp3 - tp2, tp4 - tp3, tp5 - tp4);
+
     }
 
     ts3 = get_time();
@@ -472,7 +494,7 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, cl_eve
 //  if (R != 4 || S != 4) {
 //      printf("\nFUCK %d %d\n", R, S);
 //  }
-
+  
   double t1, t2, t3, t4;
 
   t1 = get_time();
@@ -595,8 +617,9 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
       printf("\nFUCK %d %d\n", R, S);
   }
 
+  
   double t1, t2, t3, t4;
-
+  
   t1 = get_time();
 
   int dim = 3;
@@ -614,7 +637,15 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
   cl_mem output_d = clCreateBuffer(context, CL_MEM_READ_WRITE, OH * OW * K * sizeof(float), NULL, &err);
   CHECK_ERROR(err);
 
+  double xx1, xx2;
+
+  xx1 = get_time();
+
   clWaitForEvents(1, &prev_wait);
+
+  xx2 = get_time();
+
+  printf("\nTRANS WAIT: %.5f\n", xx2 - xx1);
   
   err = clSetKernelArg(kernel_conv2d_transpose, 0, sizeof(cl_mem), &input_d);
   CHECK_ERROR(err);
@@ -658,8 +689,8 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
 
   printf("\nTRANSPOSE\n%.5f\n%.5f\n%.5f\nTRANSPOSE\n", t2 - t1, t3 - t2, t4 - t3);
   
-  err = clFinish(queue);
-  CHECK_ERROR(err);
+//  err = clFinish(queue);
+//  CHECK_ERROR(err);
 
 }
 
