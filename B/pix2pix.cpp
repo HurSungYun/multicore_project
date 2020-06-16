@@ -15,7 +15,7 @@
     exit(EXIT_FAILURE); \
   }
 
-#define BLOCK_SIZE 2
+#define BLOCK_SIZE 4
 #define CACHE_SIZE 64
 
 #define NUM_THREAD 16
@@ -224,6 +224,10 @@ static void* pix2pix_thread(void *data) {
       auto bias = weights[scope + "/conv2d_transpose/bias"];
       auto scale = weights[scope + "/batch_normalization/gamma"];
       auto offset = weights[scope + "/batch_normalization/beta"];
+
+      double tx1, tx2, tx3, tx4, tx5;
+
+      tx1 = get_time();
       if (i == 8) {
         // For decoder 8, input is last layer of encoder
         decoder_layer_input[i] = encoder_layer[8];
@@ -231,13 +235,19 @@ static void* pix2pix_thread(void *data) {
         // For other decoder, input is concatenation of previous layer and corresponding encoder layer
         concat(decoder_layer[i + 1], encoder_layer[i], decoder_layer_input[i]);
       }
+      tx2 = get_time();
       relu(decoder_layer_input[i], decoder_layer_rectified[i]);
+      tx3 = get_time();
       //conv2d_transposed(decoder_layer_rectified[i], filter, bias, decoder_layer_convolved[i]);
       conv2d_transposed_gpu(decoder_layer_rectified[i], filter, bias, decoder_layer_convolved[i], idx);
 
+      tx4 = get_time();
       // Last decoder does not have batchnorm
       if (i == 1) break;
       batchnorm(decoder_layer_convolved[i], scale, offset, decoder_layer[i]);
+      tx5 = get_time();
+
+      printf("\nA: %.5f, B: %.5f, C: %.5f, D: %.5f\n", tx2 - tx1, tx3 - tx2, tx4 - tx3, tx5 - tx4);
     }
 
     ts3 = get_time();
@@ -430,7 +440,7 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int id
 
   int dim = 3;
 
-  size_t gws[3] = {OH, OW, K}, lws[3] = {1, 1, CACHE_SIZE};
+  size_t gws[3] = {OH, OW, K}, lws[3] = {BLOCK_SIZE, BLOCK_SIZE, CACHE_SIZE};
   for (int i = 0; i < dim; i++) {
     gws[i] = (gws[i] + lws[i] - 1) / lws[i] * lws[i];
   }
@@ -524,7 +534,7 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
 
   int dim = 3;
 
-  size_t gws[3] = {OH, OW, K}, lws[3] = {1, 1, CACHE_SIZE};
+  size_t gws[3] = {OH, OW, K}, lws[3] = {BLOCK_SIZE, BLOCK_SIZE, CACHE_SIZE};
   for (int i = 0; i < dim; i++) {
     gws[i] = (gws[i] + lws[i] - 1) / lws[i] * lws[i];
   }
