@@ -74,36 +74,32 @@ __kernel void conv2d_transpose(__global float *input, __global float *filter, __
 
   int tiles = (C + CACHE_SIZE - 1) / CACHE_SIZE;
   for (int r = 0; r < R; ++r) {
+    int ih = (oh - r + PAD) / STRIDE;
+    if ((oh - r + PAD) % STRIDE != 0 || ih < 0 || ih >= H) continue;
     for (int s = 0; s < S; ++s) {
-//      if ((oh - r + PAD) % STRIDE != 0 || (ow - s + PAD) % STRIDE != 0) continue;
-      int ih = (oh - r + PAD) / STRIDE;
       int iw = (ow - s + PAD) / STRIDE;
+      if ((ow - s + PAD) % STRIDE != 0 || iw < 0 || iw >= W) continue;
 
       for (int t = 0; t < tiles; t++) {
         int c_base = t * CACHE_SIZE;
         int c = c_base + local_c;
 
-        if ((oh - r + PAD) % STRIDE != 0 || (ow - s + PAD) % STRIDE != 0 || ih < 0 || ih >= H || iw < 0 || iw >= W) {
-          barrier(CLK_LOCAL_MEM_FENCE);
-          barrier(CLK_LOCAL_MEM_FENCE);
+        if (c < C) {
+          local_input[local_c] = input[ih * W * C + iw * C + c_base + local_c];
         } else {
-          if (c < C) {
-            local_input[local_c] = input[ih * W * C + iw * C + c_base + local_c];
-          } else {
-            local_input[local_c] = 0;
-          }
-
-          barrier(CLK_LOCAL_MEM_FENCE);
-
-          if (k < K) {
-            int c_max = c_base + CACHE_SIZE > C ? C - c_base : CACHE_SIZE;
-
-            for (int c_offset = 0; c_offset < c_max; c_offset++) {
-              x += local_input[c_offset] * filter[r * S * K * C + s * K * C + k * C + (c_base + c_offset)];
-            }
-          }
-          barrier(CLK_LOCAL_MEM_FENCE);
+          local_input[local_c] = 0;
         }
+
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        if (k < K) {
+          int c_max = c_base + CACHE_SIZE > C ? C - c_base : CACHE_SIZE;
+
+          for (int c_offset = 0; c_offset < c_max; c_offset++) {
+            x += local_input[c_offset] * filter[r * S * K * C + s * K * C + k * C + (c_base + c_offset)];
+          }
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
       }
     }
   }
