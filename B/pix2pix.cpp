@@ -77,6 +77,9 @@ static void print_device_info(cl_device_id device) {
   CHECK_ERROR(clGetDeviceInfo(device, CL_DEVICE_NAME, sz, buf, NULL));
   printf("Detected OpenCL device: %s\n", buf);
   free(buf);
+  size_t max_work_group_size;
+  CHECK_ERROR(clGetDeviceInfo(device, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(size_t), &max_work_group_size, NULL));
+  printf("MAX WORK GROUP SIZE : %d\n", max_work_group_size);
 }
 
 void pix2pix_init() {
@@ -180,7 +183,7 @@ static void* pix2pix_thread(void *data) {
   size_t start = idx * quota;
   size_t end = (idx + 1) * quota > num_image ? num_image : (idx + 1) * quota;
 
-  double t1, t2;
+  double t1, t2, t3;
 
   double ts1, ts2, ts3;
 
@@ -216,8 +219,9 @@ static void* pix2pix_thread(void *data) {
       t1 = get_time();
       conv2d_gpu(encoder_layer_rectified[i], filter, bias, encoder_layer_convolved[i], idx, i, init_flag, encode_filter_d[i], encode_bias_d[i]);
       t2 = get_time();
-      printf("\nFUCK\n%.5f\n", t2 - t1);
       batchnorm(encoder_layer_convolved[i], scale, offset, encoder_layer[i]);
+      t3 = get_time();
+      printf("\nFUCK: %.5f, %.5f\n", t2 - t1, t3 - t2);
     }
 
     ts2 = get_time();
