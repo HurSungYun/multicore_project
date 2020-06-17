@@ -130,6 +130,12 @@ Tensor input;
 
 static void* pix2pix_thread(void *data);
 
+cl_mem encode_filter_d[9];
+cl_mem encode_bias_d[9];
+cl_mem decode_filter_d[9];
+cl_mem decode_bias_d[9];
+
+
 void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size_t _num_image) {
   /*
    * !!!!!!!! Caution !!!!!!!!
@@ -149,6 +155,52 @@ void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size
 
   pthread_t thread[NUM_THREAD];
   int params[NUM_THREAD];
+
+  double m1, m2, m3;
+
+  m1 = get_time();
+
+  for (int i = 1; i <= 8; i++) {
+    auto scope = "generator/encoder_" + std::to_string(i);
+    auto filter = weights[scope + "/conv2d/kernel"];
+    auto bias = weights[scope + "/conv2d/bias"];
+
+    size_t R = filter.shape[0], S = filter.shape[1], C = filter.shape[2], K = filter.shape[3];
+
+    encode_filter_d[i] = clCreateBuffer(context, CL_MEM_READ_WRITE, R * S * C * K * sizeof(float), NULL, &err);
+    CHECK_ERROR(err);
+    encode_bias_d[i] = clCreateBuffer(context, CL_MEM_READ_WRITE, K * sizeof(float), NULL, &err);
+    CHECK_ERROR(err);
+
+    err = clEnqueueWriteBuffer(data_queue, encode_filter_d[i], CL_TRUE, 0, R * S * C * K * sizeof(float), filter.buf, 0, NULL, NULL);
+    CHECK_ERROR(err);
+    err = clEnqueueWriteBuffer(data_queue, encode_bias_d[i], CL_TRUE, 0, K * sizeof(float), bias.buf, 0, NULL, NULL);
+    CHECK_ERROR(err);
+  }
+
+  m2 = get_time();
+
+  for (int i = 1; i <= 8; i++) {
+    auto scope = "generator/decoder_" + std::to_string(i);
+    auto filter = weights[scope + "/conv2d_transpose/kernel"];
+    auto bias = weights[scope + "/conv2d_transpose/bias"];
+
+    size_t R = filter.shape[0], S = filter.shape[1], K = filter.shape[2], C = filter.shape[3];
+    
+    decode_filter_d[i] = clCreateBuffer(context, CL_MEM_READ_WRITE, R * S * C * K * sizeof(float), NULL, &err);
+    CHECK_ERROR(err);
+    decode_bias_d[i] = clCreateBuffer(context, CL_MEM_READ_WRITE, K * sizeof(float), NULL, &err);
+    CHECK_ERROR(err);
+
+    err = clEnqueueWriteBuffer(data_queue, decode_filter_d[i], CL_TRUE, 0, R * S * C * K * sizeof(float), filter.buf, 0, NULL, NULL);
+    CHECK_ERROR(err);
+    err = clEnqueueWriteBuffer(data_queue, decode_bias_d[i], CL_TRUE, 0, K * sizeof(float), bias.buf, 0, NULL, NULL);
+    CHECK_ERROR(err);
+  }
+
+  m3 = get_time();
+
+  printf("\nE: %.5f, D: %.5f\n",m2 - m1, m3 - m2);
 
   for (int i = 0; i < NUM_THREAD; i++) {
     params[i] = i;
@@ -174,11 +226,7 @@ static void* pix2pix_thread(void *data) {
   Tensor decoder_layer_convolved[9];
   Tensor decoder_layer[9];
 
-  cl_mem encode_filter_d[9];
-  cl_mem encode_bias_d[9];
-  cl_mem decode_filter_d[9];
-  cl_mem decode_bias_d[9];
-
+  
   size_t idx = *((int *)data);
   size_t quota = (num_image + NUM_THREAD - 1) / NUM_THREAD;
   size_t start = idx * quota;
@@ -213,6 +261,7 @@ static void* pix2pix_thread(void *data) {
       auto bias = weights[scope + "/conv2d/bias"];
       auto scale = weights[scope + "/batch_normalization/gamma"];
       auto offset = weights[scope + "/batch_normalization/beta"];
+      
 
       encoder_layer_input[i] = encoder_layer[i - 1];
       leaky_relu(encoder_layer_input[i], encoder_layer_rectified[i], 0.2);
@@ -463,12 +512,14 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int id
 
   cl_mem input_d = clCreateBuffer(context, CL_MEM_READ_WRITE, H * W * C * sizeof(float), NULL, &err);
   CHECK_ERROR(err);
+/*
   if (init_flag) {
     filter_d = clCreateBuffer(context, CL_MEM_READ_WRITE, R * S * C * K * sizeof(float), NULL, &err);
     CHECK_ERROR(err);
     bias_d = clCreateBuffer(context, CL_MEM_READ_WRITE, K * sizeof(float), NULL, &err);
     CHECK_ERROR(err);
   }
+*/
   cl_mem output_d = clCreateBuffer(context, CL_MEM_READ_WRITE, OH * OW * K * sizeof(float), NULL, &err);
   CHECK_ERROR(err);
 
@@ -499,13 +550,14 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int id
   t2 = get_time();
 
   cl_event data_wait;
-  
+/*  
   if (init_flag) {
     err = clEnqueueWriteBuffer(data_queue, filter_d, CL_TRUE, 0, R * S * C * K * sizeof(float), filter.buf, 0, NULL, NULL);
     CHECK_ERROR(err);
     err = clEnqueueWriteBuffer(data_queue, bias_d, CL_TRUE, 0, K * sizeof(float), bias.buf, 0, NULL, NULL);
     CHECK_ERROR(err);
   }
+*/
   err = clEnqueueWriteBuffer(data_queue, input_d, CL_TRUE, 0, H * W * C * sizeof(float), input.buf, 0, NULL, &data_wait);
   CHECK_ERROR(err);
 
@@ -562,12 +614,13 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
   }
   cl_mem input_d = clCreateBuffer(context, CL_MEM_READ_WRITE, H * W * C * sizeof(float), NULL, &err);
   CHECK_ERROR(err);
-  if (init_flag) {
+/*  if (init_flag) {
     filter_d = clCreateBuffer(context, CL_MEM_READ_WRITE, R * S * C * K * sizeof(float), NULL, &err);
     CHECK_ERROR(err);
     bias_d = clCreateBuffer(context, CL_MEM_READ_WRITE, K * sizeof(float), NULL, &err);
     CHECK_ERROR(err);
   }
+*/
   cl_mem output_d = clCreateBuffer(context, CL_MEM_READ_WRITE, OH * OW * K * sizeof(float), NULL, &err);
   CHECK_ERROR(err);
 
@@ -598,13 +651,14 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
   t2 = get_time();
 
   cl_event data_wait;
-  
+/*  
   if (init_flag) {
     err = clEnqueueWriteBuffer(data_queue, filter_d, CL_TRUE, 0, R * S * C * K * sizeof(float), filter.buf, 0, NULL, NULL);
     CHECK_ERROR(err);
     err = clEnqueueWriteBuffer(data_queue, bias_d, CL_TRUE, 0, K * sizeof(float), bias.buf, 0, NULL, NULL);
     CHECK_ERROR(err);
   }
+*/
   err = clEnqueueWriteBuffer(data_queue, input_d, CL_TRUE, 0, H * W * C * sizeof(float), input.buf, 0, NULL, &data_wait);
   CHECK_ERROR(err);
 
