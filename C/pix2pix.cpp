@@ -19,7 +19,7 @@
 #define BLOCK_SIZE_TRANS 4
 #define CACHE_SIZE 31
 
-#define NUM_THREAD 4
+#define NUM_THREAD 8
 
 #define DEVICE 4
 
@@ -213,8 +213,6 @@ static void* pix2pix_thread(void *data) {
      */
     bool init_flag = img_idx == start;
 
-    printf("\nINIT FLAG: %d\n", init_flag);
-
     ts1 = get_time();
 
     // Encoder 1 : conv
@@ -238,7 +236,7 @@ static void* pix2pix_thread(void *data) {
       t2 = get_time();
       batchnorm(encoder_layer_convolved[i], scale, offset, encoder_layer[i]);
       t3 = get_time();
-      printf("\nFUCK: %.5f, %.5f\n", t2 - t1, t3 - t2);
+      if (idx == 0) printf("\nFUCK: %.5f, %.5f\n", t2 - t1, t3 - t2);
     }
 
     ts2 = get_time();
@@ -277,7 +275,7 @@ static void* pix2pix_thread(void *data) {
       batchnorm(decoder_layer_convolved[i], scale, offset, decoder_layer[i]);
       tx5 = get_time();
 
-      printf("\nA: %.5f, B: %.5f, C: %.5f, D: %.5f\n", tx2 - tx1, tx3 - tx2, tx4 - tx3, tx5 - tx4);
+      if (idx == 0) printf("\nA: %.5f, B: %.5f, C: %.5f, D: %.5f\n", tx2 - tx1, tx3 - tx2, tx4 - tx3, tx5 - tx4);
     }
 
     ts3 = get_time();
@@ -290,7 +288,7 @@ static void* pix2pix_thread(void *data) {
 
     ts4 = get_time();
 
-    printf("\nSUMMARY\nENCODE: %.5f\nDECODE: %.5f\nPOSTPROCESS: %.5f\n====\n", ts2 - ts1, ts3 - ts2, ts4 - ts3);
+    if (idx == 0) printf("\nSUMMARY\nENCODE: %.5f\nDECODE: %.5f\nPOSTPROCESS: %.5f\n====\n", ts2 - ts1, ts3 - ts2, ts4 - ts3);
 
   }
 }
@@ -460,7 +458,7 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int id
   size_t OH = H / stride, OW = W / stride;
   output.alloc_once({OH, OW, K});
 
-  printf("\nH W C K: %d %d %d %d\n", H, W, C, K);
+  // printf("\nH W C K: %d %d %d %d\n", H, W, C, K);
 
   if (R != 4 || S != 4) {
       printf("\nFUCK %d %d\n", R, S);
@@ -488,7 +486,7 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int id
   cl_mem output_d = clCreateBuffer(context, CL_MEM_READ_WRITE, OH * OW * K * sizeof(float), NULL, &err);
   CHECK_ERROR(err);
 
-  printf("\n DEV : %d\n", dev);
+  // printf("\n DEV : %d\n", dev);
 
   err = clSetKernelArg(kernel_conv2d[dev][idx][step], 0, sizeof(cl_mem), &input_d);
   CHECK_ERROR(err);
@@ -547,7 +545,7 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int id
   
   t4 = get_time();
 
-  printf("\nKILL\n%.5f\n%.5f\n%.5f\nKILL\n", t2 - t1, t3 - t2, t4 - t3);
+  // printf("\nKILL\n%.5f\n%.5f\n%.5f\nKILL\n", t2 - t1, t3 - t2, t4 - t3);
   
 //  err = clFinish(queue);
 //  CHECK_ERROR(err);
@@ -561,7 +559,7 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
   size_t OH = H * stride, OW = W * stride;
   output.alloc_once({OH, OW, K});
 
-  printf("\nH W C K: %d %d %d %d\n", H, W, C, K);
+  // printf("\nH W C K: %d %d %d %d\n", H, W, C, K);
 
   if (R != 4 || S != 4) {
       printf("\nFUCK %d %d\n", R, S);
@@ -647,7 +645,7 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
 
   t4 = get_time();
 
-  printf("\nTRANSPOSE\n%.5f\n%.5f\n%.5f\nTRANSPOSE\n", t2 - t1, t3 - t2, t4 - t3);
+  // printf("\nTRANSPOSE\n%.5f\n%.5f\n%.5f\nTRANSPOSE\n", t2 - t1, t3 - t2, t4 - t3);
   
 //  err = clFinish(queue);
 //  CHECK_ERROR(err);
