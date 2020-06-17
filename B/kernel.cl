@@ -1,7 +1,7 @@
 #define BLOCK_SIZE 4
 #define STRIDE 2
 #define PAD 1
-#define CACHE_SIZE 64
+#define CACHE_SIZE 31
 
 __kernel void conv2d(__global float *input, __global float *filter, __global float *bias, __global float *output, int H, int W, int C, int R, int S, int K) {
   int local_oh = get_local_id(0);

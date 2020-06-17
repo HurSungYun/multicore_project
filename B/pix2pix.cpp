@@ -16,7 +16,7 @@
   }
 
 #define BLOCK_SIZE 4
-#define CACHE_SIZE 64
+#define CACHE_SIZE 31
 
 #define NUM_THREAD 16
 
