@@ -16,6 +16,7 @@
   }
 
 #define BLOCK_SIZE 4
+#define BLOCK_SIZE_TRANS 4
 #define CACHE_SIZE 31
 
 #define NUM_THREAD 8
@@ -185,7 +186,7 @@ static void* pix2pix_thread(void *data) {
 
   double t1, t2, t3;
 
-  double ts1, ts2, ts3;
+  double ts1, ts2, ts3, ts4;
 
   for (size_t img_idx = start; img_idx < end; ++img_idx) {
     // Pick 1 image out of num_image
@@ -271,7 +272,9 @@ static void* pix2pix_thread(void *data) {
     // Put a image into output buffer
     postprocess_one_image(decoder_layer[1], output_buf, img_idx);
 
-    printf("\nSUMMARY\nENCODE: %.5f\nDECODE: %.5f\n====\n", ts2 - ts1, ts3 - ts2);
+    ts4 = get_time();
+
+    printf("\nSUMMARY\nENCODE: %.5f\nDECODE: %.5f\nPOSTPROCESS: %.5f\n====\n", ts2 - ts1, ts3 - ts2, ts4 - ts3);
 
   }
 }
@@ -553,7 +556,7 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
 
   int dim = 3;
 
-  size_t gws[3] = {OH, OW, K}, lws[3] = {BLOCK_SIZE, BLOCK_SIZE, CACHE_SIZE};
+  size_t gws[3] = {OH, OW, K}, lws[3] = {BLOCK_SIZE_TRANS, BLOCK_SIZE_TRANS, CACHE_SIZE};
   for (int i = 0; i < dim; i++) {
     gws[i] = (gws[i] + lws[i] - 1) / lws[i] * lws[i];
   }
