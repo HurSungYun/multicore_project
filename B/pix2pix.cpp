@@ -164,15 +164,20 @@ static void* pix2pix_thread(void *data) {
 
   // Declare feature maps
   // Memory for feature maps are allocated when they are written first time using Tensor::alloc_once(...)
-  Tensor one_image;
-  Tensor encoder_layer_input[9];
-  Tensor encoder_layer_rectified[9];
-  Tensor encoder_layer_convolved[9];
-  Tensor encoder_layer[9];
-  Tensor decoder_layer_input[9];
-  Tensor decoder_layer_rectified[9];
-  Tensor decoder_layer_convolved[9];
-  Tensor decoder_layer[9];
+  Tensor one_image[DOUBLE];
+  Tensor encoder_layer_input[9][DOUBLE];
+  Tensor encoder_layer_rectified[9][DOUBLE];
+  Tensor encoder_layer_convolved[9][DOUBLE];
+  Tensor encoder_layer[9][DOUBLE];
+  Tensor decoder_layer_input[9][DOUBLE];
+  Tensor decoder_layer_rectified[9][DOUBLE];
+  Tensor decoder_layer_convolved[9][DOUBLE];
+  Tensor decoder_layer[9][DOUBLE];
+
+  cl_event wait[9][DOUBLE];
+  cl_event wait_trans[9][DOUBLE];
+
+  cl_event dummy_wait;
 
   cl_mem encode_filter_d[9];
   cl_mem encode_bias_d[9];
@@ -190,7 +195,8 @@ static void* pix2pix_thread(void *data) {
 
   for (size_t img_idx = start; img_idx < end; ++img_idx) {
     // Pick 1 image out of num_image
-    get_one_image(input, one_image, img_idx);
+    get_one_image(input, one_image[0], img_idx);
+    get_one_image(input, one_image[1], img_idx + 1);
 
     /*
      * Encoding phase
@@ -204,6 +210,7 @@ static void* pix2pix_thread(void *data) {
     // Encoder 1 : conv
     auto filter = weights["generator/encoder_1/conv2d/kernel"];
     auto bias = weights["generator/encoder_1/conv2d/bias"];
+
     conv2d_gpu(one_image, filter, bias, encoder_layer[1], idx, 1, init_flag, encode_filter_d[1], encode_bias_d[1]);
 
     for (int i = 2; i <= 8; ++i) {
@@ -214,9 +221,19 @@ static void* pix2pix_thread(void *data) {
       auto scale = weights[scope + "/batch_normalization/gamma"];
       auto offset = weights[scope + "/batch_normalization/beta"];
 
-      encoder_layer_input[i] = encoder_layer[i - 1];
-      leaky_relu(encoder_layer_input[i], encoder_layer_rectified[i], 0.2);
+      // PRE-PROCESS
+      encoder_layer_input[i][0] = encoder_layer[i - 1][0];
+      leaky_relu(encoder_layer_input[i][0], encoder_layer_rectified[i][0], 0.2);
       //conv2d(encoder_layer_rectified[i], filter, bias, encoder_layer_convolved[i]);
+      conv2d_gpu(encoder_layer_rectified[i][0], filter, bias, encoder_layer_convolved[i][0], wait[i - 1][1], wait[i][0]);
+
+      // second one
+      encoder_layer_input[i][1] = encoder_layer[i - 1][1];
+      leaky_relu(encoder_layer_input[i][1], encoder_layer_rectified[i][1], 0.2);
+      conv2d_gpu(encoder_layer_rectified[i][1], filter, bias, encoder_layer_convolved[i][1], wait[i][0], wait[i][1]);
+
+      // POST-PROCESS
+
       t1 = get_time();
       conv2d_gpu(encoder_layer_rectified[i], filter, bias, encoder_layer_convolved[i], idx, i, init_flag, encode_filter_d[i], encode_bias_d[i]);
       t2 = get_time();
@@ -244,11 +261,25 @@ static void* pix2pix_thread(void *data) {
       tx1 = get_time();
       if (i == 8) {
         // For decoder 8, input is last layer of encoder
-        decoder_layer_input[i] = encoder_layer[8];
+        decoder_layer_input[i][0] = encoder_layer[8][0];
+        relu(decoder_layer_input[i][0], decoder_layer_rectified[i][0]);
+        conv2d_transposed_gpu(decoder_layer_rectified[i][0], filter, bias, decoder_layer_convolved[i][0], wait[8][1], wait_trans[8][0]);
       } else {
         // For other decoder, input is concatenation of previous layer and corresponding encoder layer
-        concat(decoder_layer[i + 1], encoder_layer[i], decoder_layer_input[i]);
+        double pt1, pt2, pt3, pt4;
+
+        pt1 = get_time();
+        concat(decoder_layer[i + 1][0], encoder_layer[i][0], decoder_layer_input[i][0]);
+        pt2 = get_time();
+        relu(decoder_layer_input[i][0], decoder_layer_rectified[i][0]);
+        pt3 = get_time();
+        conv2d_transposed_gpu(decoder_layer_rectified[i][0], filter, bias, decoder_layer_convolved[i][0], wait_trans[i + 1][1], wait_trans[i][0]);
+        pt4 = get_time();
+
+
+        printf("\na: %.5f, b: %.5f, c: %.5f\n", pt2 - pt1, pt3 - pt2, pt4 - pt3);
       }
+
       tx2 = get_time();
       relu(decoder_layer_input[i], decoder_layer_rectified[i]);
       tx3 = get_time();
@@ -267,16 +298,20 @@ static void* pix2pix_thread(void *data) {
     ts3 = get_time();
 
     // Convert values into [-1, 1] using tanh function
-    elem_tanh(decoder_layer_convolved[1], decoder_layer[1]);
+    elem_tanh(decoder_layer_convolved[1][0], decoder_layer[1][0]);
+    elem_tanh(decoder_layer_convolved[1][1], decoder_layer[1][1]);
 
     // Put a image into output buffer
-    postprocess_one_image(decoder_layer[1], output_buf, img_idx);
+    postprocess_one_image(decoder_layer[1][0], output_buf, img_idx);
+    postprocess_one_image(decoder_layer[1][1], output_buf, img_idx + 1);
 
     ts4 = get_time();
 
     printf("\nSUMMARY\nENCODE: %.5f\nDECODE: %.5f\nPOSTPROCESS: %.5f\n====\n", ts2 - ts1, ts3 - ts2, ts4 - ts3);
 
   }
+
+
 }
 
 Tensor::Tensor() : buf(NULL) {}
@@ -446,10 +481,10 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int id
 
   printf("\nH W C K: %d %d %d %d\n", H, W, C, K);
 
-  if (R != 4 || S != 4) {
-      printf("\nFUCK %d %d\n", R, S);
-  }
-
+//  if (R != 4 || S != 4) {
+//      printf("\nFUCK %d %d\n", R, S);
+//  }
+  
   double t1, t2, t3, t4;
 
   t1 = get_time();
@@ -460,6 +495,8 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int id
   for (int i = 0; i < dim; i++) {
     gws[i] = (gws[i] + lws[i] - 1) / lws[i] * lws[i];
   }
+
+  clWaitForEvents(1, &prev_wait);
 
   cl_mem input_d = clCreateBuffer(context, CL_MEM_READ_WRITE, H * W * C * sizeof(float), NULL, &err);
   CHECK_ERROR(err);
@@ -514,6 +551,7 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int id
   cl_event compute_wait;
 
   err = clEnqueueNDRangeKernel(compute_queue, kernel_conv2d[idx][step], dim, NULL, gws, lws, 1, &data_wait, &compute_wait);
+
   CHECK_ERROR(err);
 
   err = clEnqueueReadBuffer(data_queue, output_d, CL_TRUE, 0, OH * OW * K * sizeof(float), output.buf, 1, &compute_wait, NULL); // output_wait
@@ -550,8 +588,9 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
       printf("\nFUCK %d %d\n", R, S);
   }
 
+  
   double t1, t2, t3, t4;
-
+  
   t1 = get_time();
 
   int dim = 3;
@@ -571,6 +610,15 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
   cl_mem output_d = clCreateBuffer(context, CL_MEM_READ_WRITE, OH * OW * K * sizeof(float), NULL, &err);
   CHECK_ERROR(err);
 
+  double xx1, xx2;
+
+  xx1 = get_time();
+
+  clWaitForEvents(1, &prev_wait);
+
+  xx2 = get_time();
+
+  printf("\nTRANS WAIT: %.5f\n", xx2 - xx1);
   
   err = clSetKernelArg(kernel_conv2d_transpose[idx][step], 0, sizeof(cl_mem), &input_d);
   CHECK_ERROR(err);
@@ -616,6 +664,7 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
   CHECK_ERROR(err);
 
   err = clEnqueueReadBuffer(data_queue, output_d, CL_TRUE, 0, OH * OW * K * sizeof(float), output.buf, 1, &compute_wait, NULL);
+
   CHECK_ERROR(err);
 
   err = clReleaseMemObject(input_d);
