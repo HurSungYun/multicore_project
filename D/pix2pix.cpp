@@ -172,6 +172,10 @@ void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size
     output_buf = _output_buf;
     global_num_image = _num_image;
 
+    double t1, t2;
+
+    t1 = get_time();
+
     int quota = (global_num_image + (NODE) - 1) / (NODE);
     num_image_per_node[0] = quota > global_num_image ? global_num_image : quota;
 
@@ -187,13 +191,18 @@ void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size
       printf("\n %d input_size: %d, %d\n", i, input_size, start);
       printf("offset of start %d\n", start * 256 * 256 * 3);
 
-      MPI_Send(&num_image_per_node[i], 1, MPI_INT, i, 0, MPI_COMM_WORLD); // num_image      
+      MPI_Send(&num_image_per_node[i], 1, MPI_INT, i, 0, MPI_COMM_WORLD); // num_image 
 
 //      MPI_Isend(weight_buf, weight_size, MPI_FLOAT, i, 0, MPI_COMM_WORLD, &weight_request[i]); // weight
       MPI_Send(weight_buf, weight_size, MPI_FLOAT, i, 0, MPI_COMM_WORLD); // weight
 //      MPI_Isend((void *) ((size_t) input_buf + (start * 256 * 256 * 3 * sizeof(uint8_t))), input_size, MPI_UINT8_T, i, 0, MPI_COMM_WORLD, &input_request[i]); // input
       MPI_Send((void *) ((size_t) input_buf + (start * 256 * 256 * 3 * sizeof(uint8_t))), input_size, MPI_UINT8_T, i, 0, MPI_COMM_WORLD); // input
+
+
     }
+    t2 = get_time();
+
+    printf("MPI_TIME: %.5f\n", t2 - t1);
   } else {
     weight_buf = (float*)malloc(weight_size * sizeof(float));
 
@@ -278,16 +287,12 @@ void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size
       pthread_create(&thread[idx], NULL, pix2pix_thread, &params[idx]);
     }
   }
-
-  ///////////////////////////////////////////////////////////////
-
-  for (int i = 0; i < DEVICE * NUM_THREAD; i++) {
-    pthread_join(thread[i], NULL);
-  }
-
-  //////////////////////////////////////////////////////////////
   
   if (mpi_rank == 0) {
+    double t1, t2;
+
+    t1 = get_time();
+
     for (int i = 1; i < NODE; i++) {
       printf("RECV: %d\n", i);
       int quota = (global_num_image + (NODE) - 1) / (NODE);
@@ -298,7 +303,21 @@ void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size
 
       MPI_Recv((void *) ((size_t) output_buf + (start * 256 * 256 * 3) * sizeof(uint8_t)), output_size, MPI_UINT8_T, i, 0, MPI_COMM_WORLD, NULL); // output 
     }
-  } else {
+
+    t2 = get_time();
+
+    printf("MPI IIME: %.5f\n", t2 - t1);
+
+  } 
+
+  ///////////////////////////////////////////////////////////////
+
+  for (int i = 0; i < DEVICE * NUM_THREAD; i++) {
+    pthread_join(thread[i], NULL);
+  }
+
+  //////////////////////////////////////////////////////////////
+  if (mpi_rank != 0) {
     int output_size = num_image * 256 * 256 * 3;
     printf("OUTPUT SIZE: %d, %d\n", mpi_rank, output_size);
     MPI_Send(output_buf, output_size, MPI_UINT8_T, 0, 0, MPI_COMM_WORLD); // output
