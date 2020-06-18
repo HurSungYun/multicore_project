@@ -85,37 +85,32 @@ __kernel void conv2d_transpose(__global float *input, __global float *filter, __
   // (0, 0)
 
   for (int r = (oh - 0 + PAD) % STRIDE == 0 ? 0 : 1; r < R; r += STRIDE) {
-  int ih = (oh - r + PAD) / STRIDE;
-  for (int s = (ow - 0 + PAD) % STRIDE == 0 ? 0 : 1; s < S; s += STRIDE) {
-  int iw = (ow - s + PAD) / STRIDE;
+    int ih = (oh - r + PAD) / STRIDE;
+    for (int s = (ow - 0 + PAD) % STRIDE == 0 ? 0 : 1; s < S; s += STRIDE) {
+      int iw = (ow - s + PAD) / STRIDE;
 
-  if (ih < 0 || ih >= H || iw < 0 || iw >= W) {
-    barrier(CLK_LOCAL_MEM_FENCE);
-    barrier(CLK_LOCAL_MEM_FENCE);
-  } else {
-    for (int t = 0; t < tiles; t++) {
-      int c_base = t * CACHE_SIZE;
-      int c = c_base + local_c;
-      int c_max = c_base + CACHE_SIZE > C ? C - c_base : CACHE_SIZE;
+      if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
+      for (int t = 0; t < tiles; t++) {
+        int c_base = t * CACHE_SIZE;
+        int c = c_base + local_c;
+        int c_max = c_base + CACHE_SIZE > C ? C - c_base : CACHE_SIZE;
 
-      if (c < C) {
-        local_input[local_oh][local_ow][local_c] = input[ih * W * C + iw * C + c_base + local_c];
-      } else {
-        local_input[local_oh][local_ow][local_c] = 0;
-      }
-      barrier(CLK_LOCAL_MEM_FENCE);
-
-      if (k < K) {
-
-        for (int c_offset = 0; c_offset < c_max; c_offset++) {
-          x = fma(local_input[local_oh][local_ow][c_offset], filter[r * S * K * C + s * K * C + k * C + (c_base + c_offset)], x);
+       if (c < C) {
+          local_input[local_oh][local_ow][local_c] = input[ih * W * C + iw * C + c_base + local_c];
+        } else {
+          local_input[local_oh][local_ow][local_c] = 0;
         }
-      }
-      barrier(CLK_LOCAL_MEM_FENCE);
-    }
-  }
+        barrier(CLK_LOCAL_MEM_FENCE);
 
-  }
+        if (k < K) {
+
+          for (int c_offset = 0; c_offset < c_max; c_offset++) {
+            x = fma(local_input[local_oh][local_ow][c_offset], filter[r * S * K * C + s * K * C + k * C + (c_base + c_offset)], x);
+          }
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+      }
+    }
   }
 
 
