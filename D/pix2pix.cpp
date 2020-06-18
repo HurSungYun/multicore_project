@@ -6,6 +6,7 @@
 #include <string>
 #include <map>
 #include <cmath>
+#include <mpi.h>
 
 #include <CL/cl.h>
 
@@ -22,6 +23,8 @@
 #define NUM_THREAD 8
 
 #define DEVICE 4
+
+#define NODE 4
 
 class Tensor {
 public:
@@ -126,13 +129,13 @@ void pix2pix_init() {
     }
   }
   
-  printf("\nHere 4\n");
 }
 
 static uint8_t *input_buf;
 static float *weight_buf;
 static uint8_t *output_buf;
-size_t num_image;
+int num_image;
+int global_num_image;
 
 std::map<std::string, Tensor> weights;
 Tensor input;
@@ -142,6 +145,10 @@ cl_mem encode_bias_d[DEVICE][9];
 cl_mem decode_filter_d[DEVICE][9];
 cl_mem decode_bias_d[DEVICE][9];
 
+MPI_Request input_request[NODE], weight_request[NODE], output_request[NODE];
+MPI_Status input_status[NODE], weight_status[NODE], num_image_status[NODE];
+
+int num_image_per_node[NODE];
 
 static void* pix2pix_thread(void *data);
 
@@ -154,12 +161,69 @@ void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size
    *   2. send inputs from rank 0 to others
    *   3. gather outputs from others to rank 0
    */
-  input_buf = _input_buf;
-  weight_buf = _weight_buf;
-  output_buf = _output_buf;
-  num_image = _num_image;
+  int mpi_rank;
+  MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+
+  const int weight_size = 54431363;
+
+  if (mpi_rank == 0) {
+    input_buf = _input_buf;
+    weight_buf = _weight_buf;
+    output_buf = _output_buf;
+    global_num_image = _num_image;
+
+    int quota = (global_num_image + (NODE) - 1) / (NODE);
+    num_image_per_node[0] = quota > global_num_image ? global_num_image : quota;
+
+    for (int i = 1; i < NODE; i++) {
+      int quota = (global_num_image + (NODE) - 1) / (NODE);
+      int start = i * quota;
+      int end = (i + 1) * quota > global_num_image ? global_num_image : (i + 1) * quota;
+
+      num_image_per_node[i] = end - start;
+
+      int input_size = num_image_per_node[i] * 256 * 256 * 3;
+
+      printf("\n %d input_size: %d, %d\n", i, input_size, start);
+      printf("offset of start %d\n", start * 256 * 256 * 3);
+
+      MPI_Send(&num_image_per_node[i], 1, MPI_INT, i, 0, MPI_COMM_WORLD); // num_image      
+
+//      MPI_Isend(weight_buf, weight_size, MPI_FLOAT, i, 0, MPI_COMM_WORLD, &weight_request[i]); // weight
+      MPI_Send(weight_buf, weight_size, MPI_FLOAT, i, 0, MPI_COMM_WORLD); // weight
+//      MPI_Isend((void *) ((size_t) input_buf + (start * 256 * 256 * 3 * sizeof(uint8_t))), input_size, MPI_UINT8_T, i, 0, MPI_COMM_WORLD, &input_request[i]); // input
+      MPI_Send((void *) ((size_t) input_buf + (start * 256 * 256 * 3 * sizeof(uint8_t))), input_size, MPI_UINT8_T, i, 0, MPI_COMM_WORLD); // input
+    }
+  } else {
+    weight_buf = (float*)malloc(weight_size * sizeof(float));
+
+    MPI_Recv(&num_image, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, &num_image_status[mpi_rank]);
+    
+    int input_size = num_image * 256 * 256 * 3;
+    
+    printf("\n slave input_size: %d\n", input_size);
+
+    input_buf = (uint8_t*)malloc(input_size * sizeof(uint8_t));
+
+//    MPI_Irecv(weight_buf, weight_size, MPI_FLOAT, 0, 0, MPI_COMM_WORLD, &weight_request[mpi_rank]);
+    MPI_Recv(weight_buf, weight_size, MPI_FLOAT, 0, 0, MPI_COMM_WORLD, NULL);
+//    MPI_Irecv(input_buf, input_size, MPI_UINT8_T, 0, 0, MPI_COMM_WORLD, &input_request[mpi_rank]);
+    MPI_Recv(input_buf, input_size, MPI_UINT8_T, 0, 0, MPI_COMM_WORLD, NULL);
+//    MPI_Wait(&weight_request[mpi_rank], &weight_status[mpi_rank]);
+//    MPI_Wait(&input_request[mpi_rank], &input_status[mpi_rank]);
+
+    output_buf = (uint8_t*)malloc(input_size * sizeof(uint8_t));
+  }
+
+  // num_image is now per one thread
+  if (mpi_rank == 0) {
+    num_image = num_image_per_node[0];
+  }
+
+  printf("\n%d, NUM_IMAGE: %d\n", mpi_rank, num_image);
 
   weights = register_weights(weight_buf); // Memory allocated for weights
+
   input = preprocess(input_buf, num_image); // Memory allocated for input
 
   pthread_t thread[DEVICE * NUM_THREAD];
@@ -207,9 +271,7 @@ void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size
     }
 
     ss2 = get_time();
-
-    printf("AAA: %.5f\n", ss2 - ss1);
-
+    
     for (int j = 0; j < NUM_THREAD; j++) {
       int idx = dev * NUM_THREAD + j;
       params[idx] = idx;
@@ -222,6 +284,26 @@ void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size
   for (int i = 0; i < DEVICE * NUM_THREAD; i++) {
     pthread_join(thread[i], NULL);
   }
+
+  //////////////////////////////////////////////////////////////
+  
+  if (mpi_rank == 0) {
+    for (int i = 1; i < NODE; i++) {
+      printf("RECV: %d\n", i);
+      int quota = (global_num_image + (NODE) - 1) / (NODE);
+      int start = i * quota;
+
+      int output_size = num_image_per_node[i] * 256 * 256 * 3;
+      printf("RECEIVING SIZE: %d, %d\n", mpi_rank, output_size);
+
+      MPI_Recv((void *) ((size_t) output_buf + (start * 256 * 256 * 3) * sizeof(uint8_t)), output_size, MPI_UINT8_T, i, 0, MPI_COMM_WORLD, NULL); // output 
+    }
+  } else {
+    int output_size = num_image * 256 * 256 * 3;
+    printf("OUTPUT SIZE: %d, %d\n", mpi_rank, output_size);
+    MPI_Send(output_buf, output_size, MPI_UINT8_T, 0, 0, MPI_COMM_WORLD); // output
+  }
+  printf("\n%d , F\n", mpi_rank);
 }
 
 static void* pix2pix_thread(void *data) {
@@ -244,6 +326,10 @@ static void* pix2pix_thread(void *data) {
   size_t start = idx * quota;
   size_t end = (idx + 1) * quota > num_image ? num_image : (idx + 1) * quota;
 
+  int mpi_rank;
+  MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+
+
   double t1, t2, t3;
 
   double ts1, ts2, ts3, ts4;
@@ -261,6 +347,7 @@ static void* pix2pix_thread(void *data) {
     bool init_flag = img_idx == start;
 
     ts1 = get_time();
+
 
     // Encoder 1 : conv
     auto filter = weights["generator/encoder_1/conv2d/kernel"];
@@ -283,7 +370,6 @@ static void* pix2pix_thread(void *data) {
       t2 = get_time();
       batchnorm(encoder_layer_convolved[i], scale, offset, encoder_layer[i]);
       t3 = get_time();
-      if (idx == 0) printf("\nFUCK: %.5f, %.5f\n", t2 - t1, t3 - t2);
     }
 
     ts2 = get_time();
@@ -322,7 +408,6 @@ static void* pix2pix_thread(void *data) {
       batchnorm(decoder_layer_convolved[i], scale, offset, decoder_layer[i]);
       tx5 = get_time();
 
-      if (idx == 0) printf("\nA: %.5f, B: %.5f, C: %.5f, D: %.5f\n", tx2 - tx1, tx3 - tx2, tx4 - tx3, tx5 - tx4);
     }
 
     ts3 = get_time();
@@ -334,8 +419,6 @@ static void* pix2pix_thread(void *data) {
     postprocess_one_image(decoder_layer[1], output_buf, img_idx);
 
     ts4 = get_time();
-
-    if (idx == 0) printf("\nSUMMARY\nENCODE: %.5f\nDECODE: %.5f\nPOSTPROCESS: %.5f\n====\n", ts2 - ts1, ts3 - ts2, ts4 - ts3);
 
   }
 }
@@ -365,6 +448,7 @@ void Tensor::set_sz() {
     sz *= x;
   }
 }
+
 
 // Make a new tensor from buffer and put the tensor into map. Advance buffer pointer by size.
 void register_weight(std::map<std::string, Tensor>& weights, float* (*buf), std::string name, std::vector<size_t> shape) {
@@ -505,12 +589,6 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int id
   size_t OH = H / stride, OW = W / stride;
   output.alloc_once({OH, OW, K});
 
-  // printf("\nH W C K: %d %d %d %d\n", H, W, C, K);
-
-  if (R != 4 || S != 4) {
-      printf("\nFUCK %d %d\n", R, S);
-  }
-
   double t1, t2, t3, t4;
 
   t1 = get_time();
@@ -533,8 +611,6 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int id
 */
   cl_mem output_d = clCreateBuffer(context, CL_MEM_READ_WRITE, OH * OW * K * sizeof(float), NULL, &err);
   CHECK_ERROR(err);
-
-  // printf("\n DEV : %d\n", dev);
 
   err = clSetKernelArg(kernel_conv2d[dev][idx][step], 0, sizeof(cl_mem), &input_d);
   CHECK_ERROR(err);
@@ -594,7 +670,6 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int id
   
   t4 = get_time();
 
-  // printf("\nKILL\n%.5f\n%.5f\n%.5f\nKILL\n", t2 - t1, t3 - t2, t4 - t3);
   
 //  err = clFinish(queue);
 //  CHECK_ERROR(err);
@@ -608,11 +683,6 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
   size_t OH = H * stride, OW = W * stride;
   output.alloc_once({OH, OW, K});
 
-  // printf("\nH W C K: %d %d %d %d\n", H, W, C, K);
-
-  if (R != 4 || S != 4) {
-      printf("\nFUCK %d %d\n", R, S);
-  }
 
   double t1, t2, t3, t4;
 
