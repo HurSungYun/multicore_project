@@ -45,13 +45,28 @@ __kernel void conv2d(__global float *input, __global float *filter, __global flo
     if (k < K) {
       int c_max = c_base + CACHE_SIZE > C ? C - c_base : CACHE_SIZE;
 
-      for (int r = 0; r < R; r++) {
-        for (int s = 0; s < S; s++) {
+//      for (int r = 0; r < R; r++) {
+//        for (int s = 0; s < S; s++) {
           for (int c_offset = 0; c_offset < c_max; c_offset++) {
-            x = fma(local_input[local_oh * STRIDE + r][local_ow * STRIDE + s][c_offset], filter[r * S * C * K + s * C * K + (c_base + c_offset) * K + k], x);
+            x = fma(local_input[local_oh * STRIDE + 0][local_ow * STRIDE + 0][c_offset], filter[(c_base + c_offset) * K + k], x);
+            x = fma(local_input[local_oh * STRIDE + 0][local_ow * STRIDE + 1][c_offset], filter[C * K + (c_base + c_offset) * K + k], x);
+            x = fma(local_input[local_oh * STRIDE + 0][local_ow * STRIDE + 2][c_offset], filter[2 * C * K + (c_base + c_offset) * K + k], x);
+            x = fma(local_input[local_oh * STRIDE + 0][local_ow * STRIDE + 3][c_offset], filter[3 * C * K + (c_base + c_offset) * K + k], x);
+            x = fma(local_input[local_oh * STRIDE + 1][local_ow * STRIDE + 0][c_offset], filter[1 * S * C * K + (c_base + c_offset) * K + k], x);
+            x = fma(local_input[local_oh * STRIDE + 1][local_ow * STRIDE + 1][c_offset], filter[1 * S * C * K + C * K + (c_base + c_offset) * K + k], x);
+            x = fma(local_input[local_oh * STRIDE + 1][local_ow * STRIDE + 2][c_offset], filter[1 * S * C * K + 2 * C * K + (c_base + c_offset) * K + k], x);
+            x = fma(local_input[local_oh * STRIDE + 1][local_ow * STRIDE + 3][c_offset], filter[1 * S * C * K + 3 * C * K + (c_base + c_offset) * K + k], x);
+            x = fma(local_input[local_oh * STRIDE + 2][local_ow * STRIDE + 0][c_offset], filter[2 * S * C * K + (c_base + c_offset) * K + k], x);
+            x = fma(local_input[local_oh * STRIDE + 2][local_ow * STRIDE + 1][c_offset], filter[2 * S * C * K + C * K + (c_base + c_offset) * K + k], x);
+            x = fma(local_input[local_oh * STRIDE + 2][local_ow * STRIDE + 2][c_offset], filter[2 * S * C * K + 2 * C * K + (c_base + c_offset) * K + k], x);
+            x = fma(local_input[local_oh * STRIDE + 2][local_ow * STRIDE + 3][c_offset], filter[2 * S * C * K + 3 * C * K + (c_base + c_offset) * K + k], x);
+            x = fma(local_input[local_oh * STRIDE + 3][local_ow * STRIDE + 0][c_offset], filter[3 * S * C * K + (c_base + c_offset) * K + k], x);
+            x = fma(local_input[local_oh * STRIDE + 3][local_ow * STRIDE + 1][c_offset], filter[3 * S * C * K + C * K + (c_base + c_offset) * K + k], x);
+            x = fma(local_input[local_oh * STRIDE + 3][local_ow * STRIDE + 2][c_offset], filter[3 * S * C * K + 2 * C * K + (c_base + c_offset) * K + k], x);
+            x = fma(local_input[local_oh * STRIDE + 3][local_ow * STRIDE + 3][c_offset], filter[3 * S * C * K + 3 * C * K + (c_base + c_offset) * K + k], x);
           }
-        }
-      }
+//        }
+//      }
     }
     barrier(CLK_LOCAL_MEM_FENCE);
   }
