@@ -8,8 +8,8 @@
 #include <cmath>
 
 #define NUM_THREAD 32
-#define BLOCK_SIZE 24
-#define BLOCK_SIZE_K 64
+#define BLOCK_SIZE_K 32
+#define BLOCK_SIZE_C 32
 
 #define LEAKY_RELU_ALPHA 0.2
 
@@ -115,21 +115,14 @@ static void* pix2pix_thread(void *data) {
   size_t start = f * quota;
   size_t end = (f + 1) * quota > num_image ? num_image : (f + 1) * quota;
 
-  double tz, ta, tb, tc, td, te;
-  double t1, t2, t3, t4, t5;
-
   for (size_t img_idx = start; img_idx < end; ++img_idx) {
     // Pick 1 image out of num_image
-
-    tz = get_time();
 
     get_one_image(input, one_image, img_idx);
 
     /*
      * Encoding phase
      */
-
-    ta = get_time();
 
     // Encoder 1 : conv
     auto filter = weights["generator/encoder_1/conv2d/kernel"];
@@ -144,18 +137,11 @@ static void* pix2pix_thread(void *data) {
       auto scale = weights[scope + "/batch_normalization/gamma"];
       auto offset = weights[scope + "/batch_normalization/beta"];
       encoder_layer_input[i] = encoder_layer[i - 1]; // <- dependence
-      if (f == 0) printf("\n HWC: %d %d %d\n", encoder_layer_input[i].shape[0], encoder_layer_input[i].shape[1], encoder_layer_input[i].shape[2]);
-      t1 = get_time();
       leaky_relu(encoder_layer_input[i], encoder_layer_rectified[i], 0.2);
-      t2 = get_time();
       conv2d(encoder_layer_rectified[i], filter, bias, encoder_layer_convolved[i]);
-      t3 = get_time();
       batchnorm(encoder_layer_convolved[i], scale, offset, encoder_layer[i]);
-      t4 = get_time();
-      if (f == 0) printf("FUCK\n%.5f\n%.5f\n%.5f\nFUCK\n", t2 - t1, t3 - t2, t4 - t3);
     }
 
-    tb = get_time();
     /*
      * Decoding phase
      */
@@ -167,7 +153,6 @@ static void* pix2pix_thread(void *data) {
       auto bias = weights[scope + "/conv2d_transpose/bias"];
       auto scale = weights[scope + "/batch_normalization/gamma"];
       auto offset = weights[scope + "/batch_normalization/beta"];
-      t1 = get_time();
       if (i == 8) {
         // For decoder 8, input is last layer of encoder
         decoder_layer_input[i] = encoder_layer[8];
@@ -175,34 +160,19 @@ static void* pix2pix_thread(void *data) {
         // For other decoder, input is concatenation of previous layer and corresponding encoder layer
         concat(decoder_layer[i + 1], encoder_layer[i], decoder_layer_input[i]);
       }
-      t2 = get_time();
       relu(decoder_layer_input[i], decoder_layer_rectified[i]);
-      t3 = get_time();
       conv2d_transposed(decoder_layer_rectified[i], filter, bias, decoder_layer_convolved[i]);
-      t4 = get_time();
-
 
       // Last decoder does not have batchnorm
       if (i == 1) break;
       batchnorm(decoder_layer_convolved[i], scale, offset, decoder_layer[i]);
-      t5 = get_time();
-      if (f == 0) printf("KILL\n%.5f\n%.5f\n%.5f\n%.5f\nKILL\n", t2 - t1, t3 - t2, t4 - t3, t5 - t4);
     }
 
-    tc = get_time();
     // Convert values into [-1, 1] using tanh function
     elem_tanh(decoder_layer_convolved[1], decoder_layer[1]);
     
-    td = get_time();
-
     // Put a image into output buffer
     postprocess_one_image(decoder_layer[1], output_buf, img_idx);
-
-    te = get_time();
-  }
-
-  if (f == 0) {
-    printf("\n%.5f\n%.5f\n%.5f\n%.5f\n%.5f\n", tz - ta, tb - ta, tc - tb, td - tc, te - td);
   }
 
   return NULL;
@@ -387,6 +357,11 @@ void conv2d(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
     }
   }
 
+  for (size_t kk = 0; kk < K; kk += BLOCK_SIZE_K) {
+    size_t k_end = kk + BLOCK_SIZE_K > K ? K : kk + BLOCK_SIZE_K;
+  for (size_t cc = 0; cc < C; cc += BLOCK_SIZE_C) {
+    size_t c_end = cc + BLOCK_SIZE_C > C ? C : cc + BLOCK_SIZE_C;
+
   for (size_t r = 0; r < R; ++r) {
   for (size_t s = 0; s < S; ++s) {
   for (size_t oh = 0; oh < OH; ++oh) {
@@ -395,10 +370,6 @@ void conv2d(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
     for (size_t ow = 0; ow < OW; ++ow) {
       size_t iw = ow * stride - pad + s;
       if (iw < 0 || iw >= W) continue;
-          for (size_t kk = 0; kk < K; kk += BLOCK_SIZE) {
-            size_t k_end = kk + BLOCK_SIZE > K ? K : kk + BLOCK_SIZE;
-          for (size_t cc = 0; cc < C; cc += BLOCK_SIZE) {
-            size_t c_end = cc + BLOCK_SIZE > C ? C : cc + BLOCK_SIZE;
           for (size_t k = kk; k < k_end; ++k) {
             float x = 0.0f;
             for (size_t c = cc; c < c_end; ++c) {
@@ -409,9 +380,9 @@ void conv2d(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
             }
             output.buf[oh * OW * K + ow * K + k] += x;
           }
-          }
-          }
     }
+  }
+  }
   }
   }
   }
@@ -430,8 +401,6 @@ void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output)
   size_t OH = H * stride, OW = W * stride;
   output.alloc_once({OH, OW, K});
   
-  printf("H W C R S K: %d %d %d %d %d %d\n", H, W, C, R, S, K);
-
   for (size_t oh = 0; oh < OH; oh++) {
     for (size_t ow = 0; ow < OW; ow++) {
       for (size_t k = 0; k < K; k++) {
@@ -439,6 +408,11 @@ void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output)
       }
     }
   }
+
+  for (size_t kk = 0; kk < K; kk += BLOCK_SIZE_K) {
+    size_t k_end = kk + BLOCK_SIZE_K > K ? K : kk + BLOCK_SIZE_K;
+  for (size_t cc = 0; cc < C; cc += BLOCK_SIZE_C) {
+    size_t c_end = cc + BLOCK_SIZE_C > C ? C : cc + BLOCK_SIZE_C;
 
   for (size_t r = 0; r < R; r++) {
   for (size_t s = 0; s < S; s++) {
@@ -452,10 +426,6 @@ void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output)
     for (size_t iw = 0; iw < W; iw++) {
           size_t ow = iw * stride - pad + s;
           if (ow < 0 || ow >= OW) continue;
-          for (size_t kk = 0; kk < K; kk += BLOCK_SIZE) {
-            size_t k_end = kk + BLOCK_SIZE > K ? K : kk + BLOCK_SIZE;
-          for (size_t cc = 0; cc < C; cc += BLOCK_SIZE) {
-            size_t c_end = cc + BLOCK_SIZE > C ? C : cc + BLOCK_SIZE;
           for (size_t k = kk; k < k_end; ++k) {
             float x = 0.0f;
             for (size_t c = cc; c < c_end; ++c) {
@@ -466,52 +436,15 @@ void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output)
             }
             output.buf[oh * OW * K + ow * K + k] += x;
           }
-          }
-          }
     }
   }
 //  }
 //  }
   }
   }
-/*
-  for (size_t ohoh = 0; ohoh < OH; ohoh += BLOCK_SIZE) {
-    size_t oh_end = ohoh + BLOCK_SIZE > OH ? OH : ohoh + BLOCK_SIZE;
-  for (size_t owow = 0; owow < OW; owow += BLOCK_SIZE) {
-    size_t ow_end = owow + BLOCK_SIZE > OW ? OW : owow + BLOCK_SIZE;
-  for (size_t oh = ohoh; oh < oh_end; ++oh) {
-    for (size_t ow = owow; ow < ow_end; ++ow) {
-      for (size_t r = 0; r < R; ++r) {
-        for (size_t s = 0; s < S; ++s) {
-            // input ((oh - r + pad) / stride, (ow - s + pad) / stride, c)
-            //   where (oh - r + pad) % stride == 0 && (ow - s + pad) % stride == 0
-          if ((oh - r + pad) % stride != 0 || (ow - s + pad) % stride != 0) continue;
-          size_t ih = (oh - r + pad) / stride;
-          size_t iw = (ow - s + pad) / stride;
-          if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
-          for (size_t kk = 0; kk < K; kk += BLOCK_SIZE) {
-            size_t k_end = kk + BLOCK_SIZE > K ? K : kk + BLOCK_SIZE;
-          for (size_t cc = 0; cc < C; cc += BLOCK_SIZE) {
-            size_t c_end = cc + BLOCK_SIZE > C ? C : cc + BLOCK_SIZE;
-          for (size_t k = kk; k < k_end; ++k) {
-            float x = 0.0f;
-            for (size_t c = cc; c < c_end; ++c) {
-              float ii = input.buf[ih * W * C + iw * C + c];
-              // filter (r, s, k, c)
-              float ff = filter.buf[r * S * K * C + s * K * C + k * C + c];
-              x += ii * ff;
-            }
-            output.buf[oh * OW * K + ow * K + k] += x;
-          }
-          }
-          }
-        }
-      }
-    }
   }
   }
-  }
-*/
+
 }
 
 // Leaky ReLU
