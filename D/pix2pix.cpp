@@ -83,9 +83,6 @@ static void print_device_info(cl_device_id device) {
   CHECK_ERROR(clGetDeviceInfo(device, CL_DEVICE_NAME, sz, buf, NULL));
   printf("Detected OpenCL device: %s\n", buf);
   free(buf);
-  size_t max_work_group_size;
-  CHECK_ERROR(clGetDeviceInfo(device, CL_DEVICE_MAX_WORK_GROUP_SIZE, sizeof(size_t), &max_work_group_size, NULL));
-  printf("MAX WORK GROUP SIZE : %d\n", max_work_group_size);
 }
 
 void pix2pix_init() {
@@ -172,10 +169,6 @@ void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size
     output_buf = _output_buf;
     global_num_image = _num_image;
 
-    double t1, t2;
-
-    t1 = get_time();
-
     int quota = (global_num_image + (NODE) - 1) / (NODE);
     num_image_per_node[0] = quota > global_num_image ? global_num_image : quota;
 
@@ -188,9 +181,6 @@ void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size
 
       int input_size = num_image_per_node[i] * 256 * 256 * 3;
 
-      printf("\n %d input_size: %d, %d\n", i, input_size, start);
-      printf("offset of start %d\n", start * 256 * 256 * 3);
-
       MPI_Send(&num_image_per_node[i], 1, MPI_INT, i, 0, MPI_COMM_WORLD); // num_image 
 
 //      MPI_Isend(weight_buf, weight_size, MPI_FLOAT, i, 0, MPI_COMM_WORLD, &weight_request[i]); // weight
@@ -200,9 +190,6 @@ void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size
 
 
     }
-    t2 = get_time();
-
-    printf("MPI_TIME: %.5f\n", t2 - t1);
   } else {
     weight_buf = (float*)malloc(weight_size * sizeof(float));
 
@@ -210,8 +197,6 @@ void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size
     
     int input_size = num_image * 256 * 256 * 3;
     
-    printf("\n slave input_size: %d\n", input_size);
-
     input_buf = (uint8_t*)malloc(input_size * sizeof(uint8_t));
 
 //    MPI_Irecv(weight_buf, weight_size, MPI_FLOAT, 0, 0, MPI_COMM_WORLD, &weight_request[mpi_rank]);
@@ -229,8 +214,6 @@ void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size
     num_image = num_image_per_node[0];
   }
 
-  printf("\n%d, NUM_IMAGE: %d\n", mpi_rank, num_image);
-
   weights = register_weights(weight_buf); // Memory allocated for weights
 
   input = preprocess(input_buf, num_image); // Memory allocated for input
@@ -239,9 +222,6 @@ void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size
   int params[DEVICE * NUM_THREAD];
 
   for (int dev = 0; dev < DEVICE; dev++) {
-    double ss1, ss2;
-
-    ss1 = get_time();
 
     for (int i = 1; i <= 8; i++) {
       auto scope = "generator/encoder_" + std::to_string(i);
@@ -279,8 +259,6 @@ void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size
       CHECK_ERROR(err);
     }
 
-    ss2 = get_time();
-    
     for (int j = 0; j < NUM_THREAD; j++) {
       int idx = dev * NUM_THREAD + j;
       params[idx] = idx;
@@ -289,24 +267,15 @@ void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size
   }
   
   if (mpi_rank == 0) {
-    double t1, t2;
-
-    t1 = get_time();
 
     for (int i = 1; i < NODE; i++) {
-      printf("RECV: %d\n", i);
       int quota = (global_num_image + (NODE) - 1) / (NODE);
       int start = i * quota;
 
       int output_size = num_image_per_node[i] * 256 * 256 * 3;
-      printf("RECEIVING SIZE: %d, %d\n", mpi_rank, output_size);
 
       MPI_Recv((void *) ((size_t) output_buf + (start * 256 * 256 * 3) * sizeof(uint8_t)), output_size, MPI_UINT8_T, i, 0, MPI_COMM_WORLD, NULL); // output 
     }
-
-    t2 = get_time();
-
-    printf("MPI IIME: %.5f\n", t2 - t1);
 
   } 
 
@@ -319,10 +288,8 @@ void pix2pix(uint8_t *_input_buf, float *_weight_buf, uint8_t *_output_buf, size
   //////////////////////////////////////////////////////////////
   if (mpi_rank != 0) {
     int output_size = num_image * 256 * 256 * 3;
-    printf("OUTPUT SIZE: %d, %d\n", mpi_rank, output_size);
     MPI_Send(output_buf, output_size, MPI_UINT8_T, 0, 0, MPI_COMM_WORLD); // output
   }
-  printf("\n%d , F\n", mpi_rank);
 }
 
 static void* pix2pix_thread(void *data) {
@@ -349,10 +316,6 @@ static void* pix2pix_thread(void *data) {
   MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
 
 
-  double t1, t2, t3;
-
-  double ts1, ts2, ts3, ts4;
-
   int dev = idx / NUM_THREAD;
   int thread_idx = idx % NUM_THREAD;
 
@@ -364,9 +327,6 @@ static void* pix2pix_thread(void *data) {
      * Encoding phase
      */
     bool init_flag = img_idx == start;
-
-    ts1 = get_time();
-
 
     // Encoder 1 : conv
     auto filter = weights["generator/encoder_1/conv2d/kernel"];
@@ -384,14 +344,9 @@ static void* pix2pix_thread(void *data) {
       encoder_layer_input[i] = encoder_layer[i - 1];
       leaky_relu(encoder_layer_input[i], encoder_layer_rectified[i], 0.2);
       //conv2d(encoder_layer_rectified[i], filter, bias, encoder_layer_convolved[i]);
-      t1 = get_time();
       conv2d_gpu(encoder_layer_rectified[i], filter, bias, encoder_layer_convolved[i], thread_idx, i, init_flag, encode_filter_d[dev][i], encode_bias_d[dev][i], dev);
-      t2 = get_time();
       batchnorm(encoder_layer_convolved[i], scale, offset, encoder_layer[i]);
-      t3 = get_time();
     }
-
-    ts2 = get_time();
 
     /*
      * Decoding phase
@@ -405,9 +360,6 @@ static void* pix2pix_thread(void *data) {
       auto scale = weights[scope + "/batch_normalization/gamma"];
       auto offset = weights[scope + "/batch_normalization/beta"];
 
-      double tx1, tx2, tx3, tx4, tx5;
-
-      tx1 = get_time();
       if (i == 8) {
         // For decoder 8, input is last layer of encoder
         decoder_layer_input[i] = encoder_layer[8];
@@ -415,29 +367,21 @@ static void* pix2pix_thread(void *data) {
         // For other decoder, input is concatenation of previous layer and corresponding encoder layer
         concat(decoder_layer[i + 1], encoder_layer[i], decoder_layer_input[i]);
       }
-      tx2 = get_time();
       relu(decoder_layer_input[i], decoder_layer_rectified[i]);
-      tx3 = get_time();
       //conv2d_transposed(decoder_layer_rectified[i], filter, bias, decoder_layer_convolved[i]);
       conv2d_transposed_gpu(decoder_layer_rectified[i], filter, bias, decoder_layer_convolved[i], thread_idx, i, init_flag, decode_filter_d[dev][i], decode_bias_d[dev][i], dev);
 
-      tx4 = get_time();
       // Last decoder does not have batchnorm
       if (i == 1) break;
       batchnorm(decoder_layer_convolved[i], scale, offset, decoder_layer[i]);
-      tx5 = get_time();
 
     }
-
-    ts3 = get_time();
 
     // Convert values into [-1, 1] using tanh function
     elem_tanh(decoder_layer_convolved[1], decoder_layer[1]);
 
     // Put a image into output buffer
     postprocess_one_image(decoder_layer[1], output_buf, img_idx);
-
-    ts4 = get_time();
 
   }
 }
@@ -608,10 +552,6 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int id
   size_t OH = H / stride, OW = W / stride;
   output.alloc_once({OH, OW, K});
 
-  double t1, t2, t3, t4;
-
-  t1 = get_time();
-
   int dim = 3;
 
   size_t gws[3] = {OH, OW, K}, lws[3] = {BLOCK_SIZE, BLOCK_SIZE, CACHE_SIZE};
@@ -654,8 +594,6 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int id
   err = clSetKernelArg(kernel_conv2d[dev][idx][step], 9, sizeof(int), &K);
   CHECK_ERROR(err);
 
-  t2 = get_time();
-
   cl_event data_wait;
 /*  
   if (init_flag) {
@@ -667,8 +605,6 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int id
 */
   err = clEnqueueWriteBuffer(data_queue[dev], input_d, CL_TRUE, 0, H * W * C * sizeof(float), input.buf, 0, NULL, &data_wait);
   CHECK_ERROR(err);
-
-  t3 = get_time();
 
   cl_event compute_wait;
 
@@ -687,9 +623,6 @@ void conv2d_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &output, int id
   err = clReleaseMemObject(output_d);
   CHECK_ERROR(err);
   
-  t4 = get_time();
-
-  
 //  err = clFinish(queue);
 //  CHECK_ERROR(err);
 }
@@ -702,10 +635,6 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
   size_t OH = H * stride, OW = W * stride;
   output.alloc_once({OH, OW, K});
 
-
-  double t1, t2, t3, t4;
-
-  t1 = get_time();
 
   int dim = 3;
 
@@ -750,8 +679,6 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
   err = clSetKernelArg(kernel_conv2d_transpose[dev][idx][step], 9, sizeof(int), &K);
   CHECK_ERROR(err);
 
-  t2 = get_time();
-
   cl_event data_wait;
 /*
   if (init_flag) {
@@ -763,8 +690,6 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
 */
   err = clEnqueueWriteBuffer(data_queue[dev], input_d, CL_TRUE, 0, H * W * C * sizeof(float), input.buf, 0, NULL, &data_wait);
   CHECK_ERROR(err);
-
-  t3 = get_time();
 
   cl_event compute_wait;
 
@@ -782,9 +707,6 @@ void conv2d_transposed_gpu(Tensor input, Tensor filter, Tensor bias, Tensor &out
 //  CHECK_ERROR(err);
   err = clReleaseMemObject(output_d);
   CHECK_ERROR(err);
- 
-
-  t4 = get_time();
 
   // printf("\nTRANSPOSE\n%.5f\n%.5f\n%.5f\nTRANSPOSE\n", t2 - t1, t3 - t2, t4 - t3);
   
