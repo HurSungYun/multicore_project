@@ -6,6 +6,7 @@
 #include <string>
 #include <map>
 #include <cmath>
+#include <immintrin.h>
 
 #define NUM_THREAD 32
 #define BLOCK_SIZE_K 32
@@ -426,15 +427,47 @@ void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output)
     for (size_t iw = 0; iw < W; iw++) {
           size_t ow = iw * stride - pad + s;
           if (ow < 0 || ow >= OW) continue;
+
           for (size_t k = kk; k < k_end; ++k) {
             float x = 0.0f;
-            for (size_t c = cc; c < c_end; ++c) {
-              float ii = input.buf[ih * W * C + iw * C + c];
-              // filter (r, s, k, c)
-              float ff = filter.buf[r * S * K * C + s * K * C + k * C + c];
-              x += ii * ff;
+            if (c_end - cc == BLOCK_SIZE_C) { // BLOCK_SIZE_C == 32
+                float buf[BLOCK_SIZE_C];
+                for (size_t c = cc; c < c_end; c++) {
+                  buf[c - cc] = (float) input.buf[ih * W * C + iw * C + c];
+                }
+
+              __m256 temp = {0.0f, };
+              
+              __m256 ii1 = _mm256_loadu_ps(&buf[0]); // uint8_t
+              __m256 ff1 = _mm256_loadu_ps(&filter.buf[r * S * K * C + s * K * C + k * C + cc]);
+              
+              temp = _mm256_add_ps(_mm256_mul_ps(ii1, ff1), temp);
+              
+              __m256 ii2 = _mm256_loadu_ps(&buf[8]);
+              __m256 ff2 = _mm256_loadu_ps(&filter.buf[r * S * K * C + s * K * C + k * C + cc + 8]);
+              
+              temp = _mm256_add_ps(_mm256_mul_ps(ii2, ff2), temp);
+              
+              __m256 ii3 = _mm256_loadu_ps(&buf[16]);
+              __m256 ff3 = _mm256_loadu_ps(&filter.buf[r * S * K * C + s * K * C + k * C + cc + 16]);
+              
+              temp = _mm256_add_ps(_mm256_mul_ps(ii3, ff3), temp);
+              
+              __m256 ii4 = _mm256_loadu_ps(&buf[24]);
+              __m256 ff4 = _mm256_loadu_ps(&filter.buf[r * S * K * C + s * K * C + k * C + cc + 24]);
+
+              temp = _mm256_add_ps(_mm256_mul_ps(ii4, ff4), temp);
+
+              output.buf[oh * OW * K + ow * K + k] += temp[0] + temp[1] + temp[2] + temp[3] + temp[4] + temp[5] + temp[6] + temp[7];
+            } else {
+              for (size_t c = cc; c < c_end; ++c) {
+                float ii = input.buf[ih * W * C + iw * C + c];
+                // filter (r, s, k, c)
+                float ff = filter.buf[r * S * K * C + s * K * C + k * C + c];
+                x += ii * ff;
+              }
+              output.buf[oh * OW * K + ow * K + k] += x;
             }
-            output.buf[oh * OW * K + ow * K + k] += x;
           }
     }
   }
