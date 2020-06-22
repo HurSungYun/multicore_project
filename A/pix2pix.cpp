@@ -10,7 +10,7 @@
 
 #define NUM_THREAD 32
 #define BLOCK_SIZE_K 32
-#define BLOCK_SIZE_C 32
+#define BLOCK_SIZE_C 64
 
 #define LEAKY_RELU_ALPHA 0.2
 
@@ -423,6 +423,27 @@ void conv2d(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
               __m256 ff4 = _mm256_loadu_ps(&buf_filter[24]);
 
               temp = _mm256_add_ps(_mm256_mul_ps(ii4, ff4), temp);
+              
+              __m256 ii5 = _mm256_loadu_ps(&buf_input[32]);
+              __m256 ff5 = _mm256_loadu_ps(&buf_filter[32]);
+
+              temp = _mm256_add_ps(_mm256_mul_ps(ii5, ff5), temp);
+
+              __m256 ii6 = _mm256_loadu_ps(&buf_input[40]);
+              __m256 ff6 = _mm256_loadu_ps(&buf_filter[40]);
+
+              temp = _mm256_add_ps(_mm256_mul_ps(ii6, ff6), temp);
+
+              __m256 ii7 = _mm256_loadu_ps(&buf_input[48]);
+              __m256 ff7 = _mm256_loadu_ps(&buf_filter[48]);
+
+              temp = _mm256_add_ps(_mm256_mul_ps(ii7, ff7), temp);
+
+              __m256 ii8 = _mm256_loadu_ps(&buf_input[56]);
+              __m256 ff8 = _mm256_loadu_ps(&buf_filter[56]);
+
+              temp = _mm256_add_ps(_mm256_mul_ps(ii8, ff8), temp);
+
 
               output.buf[oh * OW * K + ow * K + k] += temp[0] + temp[1] + temp[2] + temp[3] + temp[4] + temp[5] + temp[6] + temp[7];
  
@@ -514,6 +535,26 @@ void conv2d_transposed(Tensor input, Tensor filter, Tensor bias, Tensor &output)
               __m256 ff4 = _mm256_loadu_ps(&filter.buf[r * S * K * C + s * K * C + k * C + cc + 24]);
 
               temp = _mm256_add_ps(_mm256_mul_ps(ii4, ff4), temp);
+              
+              __m256 ii5 = _mm256_loadu_ps(&buf[32]);
+              __m256 ff5 = _mm256_loadu_ps(&filter.buf[r * S * K * C + s * K * C + k * C + cc + 32]);
+
+              temp = _mm256_add_ps(_mm256_mul_ps(ii5, ff5), temp);
+
+              __m256 ii6 = _mm256_loadu_ps(&buf[40]);
+              __m256 ff6 = _mm256_loadu_ps(&filter.buf[r * S * K * C + s * K * C + k * C + cc + 40]);
+
+              temp = _mm256_add_ps(_mm256_mul_ps(ii6, ff6), temp);
+
+              __m256 ii7 = _mm256_loadu_ps(&buf[48]);
+              __m256 ff7 = _mm256_loadu_ps(&filter.buf[r * S * K * C + s * K * C + k * C + cc + 48]);
+
+              temp = _mm256_add_ps(_mm256_mul_ps(ii7, ff7), temp);
+
+              __m256 ii8 = _mm256_loadu_ps(&buf[56]);
+              __m256 ff8 = _mm256_loadu_ps(&filter.buf[r * S * K * C + s * K * C + k * C + cc + 56]);
+
+              temp = _mm256_add_ps(_mm256_mul_ps(ii8, ff8), temp);
 
               output.buf[oh * OW * K + ow * K + k] += temp[0] + temp[1] + temp[2] + temp[3] + temp[4] + temp[5] + temp[6] + temp[7];
             } else {
