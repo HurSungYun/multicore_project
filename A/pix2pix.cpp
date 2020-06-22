@@ -130,6 +130,7 @@ static void* pix2pix_thread(void *data) {
     auto bias = weights["generator/encoder_1/conv2d/bias"];
     conv2d(one_image, filter, bias, encoder_layer[1]);
 
+
     for (int i = 2; i <= 8; ++i) {
       // Encoder i : leaky_relu => conv2d => batchnorm
       auto scope = "generator/encoder_" + std::to_string(i);
@@ -212,6 +213,25 @@ void register_weight(std::map<std::string, Tensor>& weights, float* (*buf), std:
   *buf += tensor.sz;
 }
 
+void register_weight_trans(std::map<std::string, Tensor>& weights, float* (*buf), std::string name, std::vector<size_t> shape) {
+  Tensor t;
+  size_t R = shape[0], S = shape[1], C = shape[2], K = shape[3];
+  t.alloc_once({R, S, K, C});
+
+  for (size_t r = 0; r < R; r++) {
+    for (size_t s = 0; s < S; s++) {
+      for (size_t c = 0; c < C; c++) {
+        for (size_t k = 0; k < K; k++) {
+            t.buf[r * S * K * C + s * K * C + k * C + c] = (*buf)[r * S * C * K + s * C * K + c * K + k];
+        }
+      }
+    }
+  }
+
+  weights[name] = t;
+  *buf += t.sz;
+}
+
 // Put all predefined weights into map. Order should not be changed.
 std::map<std::string, Tensor> register_weights(float* weight_buf) {
   std::map<std::string, Tensor> weights;
@@ -260,50 +280,52 @@ std::map<std::string, Tensor> register_weights(float* weight_buf) {
   register_weight(weights, &weight_buf, "generator/decoder_8/batch_normalization/moving_variance", {512});
   register_weight(weights, &weight_buf, "generator/decoder_8/conv2d_transpose/bias", {512});
   register_weight(weights, &weight_buf, "generator/decoder_8/conv2d_transpose/kernel", {4, 4, 512, 512});
+
+
   register_weight(weights, &weight_buf, "generator/encoder_1/conv2d/bias", {64});
-  register_weight(weights, &weight_buf, "generator/encoder_1/conv2d/kernel", {4, 4, 3, 64});
+  register_weight_trans(weights, &weight_buf, "generator/encoder_1/conv2d/kernel", {4, 4, 3, 64});
   register_weight(weights, &weight_buf, "generator/encoder_2/batch_normalization/beta", {128});
   register_weight(weights, &weight_buf, "generator/encoder_2/batch_normalization/gamma", {128});
   register_weight(weights, &weight_buf, "generator/encoder_2/batch_normalization/moving_mean", {128});
   register_weight(weights, &weight_buf, "generator/encoder_2/batch_normalization/moving_variance", {128});
   register_weight(weights, &weight_buf, "generator/encoder_2/conv2d/bias", {128});
-  register_weight(weights, &weight_buf, "generator/encoder_2/conv2d/kernel", {4, 4, 64, 128});
+  register_weight_trans(weights, &weight_buf, "generator/encoder_2/conv2d/kernel", {4, 4, 64, 128});
   register_weight(weights, &weight_buf, "generator/encoder_3/batch_normalization/beta", {256});
   register_weight(weights, &weight_buf, "generator/encoder_3/batch_normalization/gamma", {256});
   register_weight(weights, &weight_buf, "generator/encoder_3/batch_normalization/moving_mean", {256});
   register_weight(weights, &weight_buf, "generator/encoder_3/batch_normalization/moving_variance", {256});
   register_weight(weights, &weight_buf, "generator/encoder_3/conv2d/bias", {256});
-  register_weight(weights, &weight_buf, "generator/encoder_3/conv2d/kernel", {4, 4, 128, 256});
+  register_weight_trans(weights, &weight_buf, "generator/encoder_3/conv2d/kernel", {4, 4, 128, 256});
   register_weight(weights, &weight_buf, "generator/encoder_4/batch_normalization/beta", {512});
   register_weight(weights, &weight_buf, "generator/encoder_4/batch_normalization/gamma", {512});
   register_weight(weights, &weight_buf, "generator/encoder_4/batch_normalization/moving_mean", {512});
   register_weight(weights, &weight_buf, "generator/encoder_4/batch_normalization/moving_variance", {512});
   register_weight(weights, &weight_buf, "generator/encoder_4/conv2d/bias", {512});
-  register_weight(weights, &weight_buf, "generator/encoder_4/conv2d/kernel", {4, 4, 256, 512});
+  register_weight_trans(weights, &weight_buf, "generator/encoder_4/conv2d/kernel", {4, 4, 256, 512});
   register_weight(weights, &weight_buf, "generator/encoder_5/batch_normalization/beta", {512});
   register_weight(weights, &weight_buf, "generator/encoder_5/batch_normalization/gamma", {512});
   register_weight(weights, &weight_buf, "generator/encoder_5/batch_normalization/moving_mean", {512});
   register_weight(weights, &weight_buf, "generator/encoder_5/batch_normalization/moving_variance", {512});
   register_weight(weights, &weight_buf, "generator/encoder_5/conv2d/bias", {512});
-  register_weight(weights, &weight_buf, "generator/encoder_5/conv2d/kernel", {4, 4, 512, 512});
+  register_weight_trans(weights, &weight_buf, "generator/encoder_5/conv2d/kernel", {4, 4, 512, 512});
   register_weight(weights, &weight_buf, "generator/encoder_6/batch_normalization/beta", {512});
   register_weight(weights, &weight_buf, "generator/encoder_6/batch_normalization/gamma", {512});
   register_weight(weights, &weight_buf, "generator/encoder_6/batch_normalization/moving_mean", {512});
   register_weight(weights, &weight_buf, "generator/encoder_6/batch_normalization/moving_variance", {512});
   register_weight(weights, &weight_buf, "generator/encoder_6/conv2d/bias", {512});
-  register_weight(weights, &weight_buf, "generator/encoder_6/conv2d/kernel", {4, 4, 512, 512});
+  register_weight_trans(weights, &weight_buf, "generator/encoder_6/conv2d/kernel", {4, 4, 512, 512});
   register_weight(weights, &weight_buf, "generator/encoder_7/batch_normalization/beta", {512});
   register_weight(weights, &weight_buf, "generator/encoder_7/batch_normalization/gamma", {512});
   register_weight(weights, &weight_buf, "generator/encoder_7/batch_normalization/moving_mean", {512});
   register_weight(weights, &weight_buf, "generator/encoder_7/batch_normalization/moving_variance", {512});
   register_weight(weights, &weight_buf, "generator/encoder_7/conv2d/bias", {512});
-  register_weight(weights, &weight_buf, "generator/encoder_7/conv2d/kernel", {4, 4, 512, 512});
+  register_weight_trans(weights, &weight_buf, "generator/encoder_7/conv2d/kernel", {4, 4, 512, 512});
   register_weight(weights, &weight_buf, "generator/encoder_8/batch_normalization/beta", {512});
   register_weight(weights, &weight_buf, "generator/encoder_8/batch_normalization/gamma", {512});
   register_weight(weights, &weight_buf, "generator/encoder_8/batch_normalization/moving_mean", {512});
   register_weight(weights, &weight_buf, "generator/encoder_8/batch_normalization/moving_variance", {512});
   register_weight(weights, &weight_buf, "generator/encoder_8/conv2d/bias", {512});
-  register_weight(weights, &weight_buf, "generator/encoder_8/conv2d/kernel", {4, 4, 512, 512});
+  register_weight_trans(weights, &weight_buf, "generator/encoder_8/conv2d/kernel", {4, 4, 512, 512});
   return weights;
 }
 
@@ -345,7 +367,7 @@ void conv2d(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
   // bias shape = (output_channels)
   // output shape = (in_height / stride, in_width / stride, output_channels)
   size_t H = input.shape[0], W = input.shape[1], C = input.shape[2];
-  size_t R = filter.shape[0], S = filter.shape[1], K = filter.shape[3];
+  size_t R = filter.shape[0], S = filter.shape[1], K = filter.shape[2];
   const size_t stride = 2, pad = 1;
   size_t OH = H / stride, OW = W / stride;
   output.alloc_once({OH, OW, K});
@@ -357,11 +379,11 @@ void conv2d(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
       }
     }
   }
-
   for (size_t kk = 0; kk < K; kk += BLOCK_SIZE_K) {
     size_t k_end = kk + BLOCK_SIZE_K > K ? K : kk + BLOCK_SIZE_K;
   for (size_t cc = 0; cc < C; cc += BLOCK_SIZE_C) {
     size_t c_end = cc + BLOCK_SIZE_C > C ? C : cc + BLOCK_SIZE_C;
+
 
   for (size_t r = 0; r < R; ++r) {
   for (size_t s = 0; s < S; ++s) {
@@ -372,14 +394,49 @@ void conv2d(Tensor input, Tensor filter, Tensor bias, Tensor &output) {
       size_t iw = ow * stride - pad + s;
       if (iw < 0 || iw >= W) continue;
           for (size_t k = kk; k < k_end; ++k) {
-            float x = 0.0f;
-            for (size_t c = cc; c < c_end; ++c) {
-              float ii = input.buf[ih * W * C + iw * C + c]; // [ih][iw][c]
-              // filter (r, s, c, k)
-              float ff = filter.buf[r * S * C * K + s * C * K + c * K + k]; // [r][s][c][k]
-              x += ii * ff;
+            if (c_end - cc == BLOCK_SIZE_C) { // BLOCK_SIZE_C == 32
+              float buf_input[BLOCK_SIZE_C];
+              float buf_filter[BLOCK_SIZE_C];
+              for (size_t c = cc; c < c_end; c++) {
+                buf_input[c - cc] = (float) input.buf[ih * W * C + iw * C + c];
+                buf_filter[c - cc] = (float) filter.buf[r * S * K * C + s * K * C + k * C + c];
+              }
+
+              __m256 temp = {0.0f, };
+              
+              __m256 ii1 = _mm256_loadu_ps(&buf_input[0]); // uint8_t
+              __m256 ff1 = _mm256_loadu_ps(&buf_filter[0]);
+              
+              temp = _mm256_add_ps(_mm256_mul_ps(ii1, ff1), temp);
+              
+              __m256 ii2 = _mm256_loadu_ps(&buf_input[8]);
+              __m256 ff2 = _mm256_loadu_ps(&buf_filter[8]);
+              
+              temp = _mm256_add_ps(_mm256_mul_ps(ii2, ff2), temp);
+              
+              __m256 ii3 = _mm256_loadu_ps(&buf_input[16]);
+              __m256 ff3 = _mm256_loadu_ps(&buf_filter[16]);
+              
+              temp = _mm256_add_ps(_mm256_mul_ps(ii3, ff3), temp);
+              
+              __m256 ii4 = _mm256_loadu_ps(&buf_input[24]);
+              __m256 ff4 = _mm256_loadu_ps(&buf_filter[24]);
+
+              temp = _mm256_add_ps(_mm256_mul_ps(ii4, ff4), temp);
+
+              output.buf[oh * OW * K + ow * K + k] += temp[0] + temp[1] + temp[2] + temp[3] + temp[4] + temp[5] + temp[6] + temp[7];
+ 
+
+            } else {
+              float x = 0.0f;
+              for (size_t c = cc; c < c_end; ++c) {
+                float ii = input.buf[ih * W * C + iw * C + c]; // [ih][iw][c]
+                // filter (r, s, c, k)
+                float ff = filter.buf[r * S * K * C + s * K * C + k * C + c]; // [r][s][c][k]
+                x += ii * ff;
+              }
+              output.buf[oh * OW * K + ow * K + k] += x;
             }
-            output.buf[oh * OW * K + ow * K + k] += x;
           }
     }
   }
